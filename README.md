@@ -11,6 +11,7 @@ npm install
 npm run dev
 
 
+IN A DIFFERENT TERMINAL SET UP BACKEND BELOW:
 
 # Install backend dependencies
 cd ../server
