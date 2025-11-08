@@ -4,6 +4,7 @@ cd ktpilot-rag-bot
 
 # Install frontend dependencies
 cd client
+
 npm install
 
 cd client
