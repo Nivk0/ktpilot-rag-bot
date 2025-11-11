@@ -18,17 +18,21 @@ This guide explains how to deploy the KTPilot backend to Railway, which is recom
 4. Connect your GitHub account (if not already connected)
 5. Select your repository: `ktpilot-rag-bot`
 
-## Step 2: Configure Service
+## Step 2: Configure Service ⚠️ CRITICAL STEP
+
+**This is the most important step!** Without setting the Root Directory, Railway will try to analyze your entire repository (which has both `client/` and `server/` directories) and won't know which one to build.
 
 1. Railway will detect your project structure
 2. Click on the service that was created
-3. Go to "Settings" tab
-4. Set the following:
-   - **Root Directory**: `server` ⚠️ **CRITICAL - This must be set!**
-   - **Build Command**: Leave EMPTY (RAILPACK will auto-detect and run `npm install`)
-   - **Start Command**: Leave EMPTY (RAILPACK will auto-detect and use `npm start` from package.json)
+3. Go to **"Settings"** tab
+4. **Scroll down to "Root Directory"** section
+5. Set **Root Directory** to: `server` ⚠️ **THIS IS CRITICAL - Railway needs to know to only look in the server directory**
+6. **Build Command**: Leave EMPTY (RAILPACK will auto-detect and run `npm install`)
+7. **Start Command**: Leave EMPTY (RAILPACK will auto-detect and use `npm start` from package.json)
 
-**Note**: The `server/railway.json` file configures Railway to use RAILPACK builder, which automatically detects Node.js projects from `package.json`. RAILPACK is Railway's build system (not Docker) - it's lightweight and auto-detects your project type.
+**Why this is needed:** Your repository has both `client/` (frontend) and `server/` (backend) directories. Railway needs to know which directory contains the Node.js application you want to deploy. Setting Root Directory to `server` tells Railway to only analyze and build the `server/` directory.
+
+**Note**: The `railway.json` file in the root directory configures Railway to use RAILPACK builder. RAILPACK is Railway's build system (not Docker) - it automatically detects Node.js projects from `package.json` in the specified root directory.
 
 ## Step 3: Set Environment Variables
 

@@ -14,19 +14,22 @@ Deploy KTPilot with:
 1. Go to [railway.app](https://railway.app) and sign up
 2. Click "New Project" → "Deploy from GitHub repo"
 3. Select your repository
-4. Go to Settings → Set Root Directory to `server` ⚠️ **CRITICAL**
-5. Leave Build Command EMPTY (Railway auto-detects)
-6. Leave Start Command EMPTY (Railway auto-detects from package.json)
-7. Go to Variables → Add:
+4. **Go to Settings** → Scroll to "Root Directory" section
+5. **Set Root Directory to:** `server` ⚠️ **CRITICAL - This tells Railway to only build the server directory**
+6. **Leave Build Command EMPTY** (Railway auto-detects)
+7. **Leave Start Command EMPTY** (Railway auto-detects from package.json)
+8. **Go to Variables** → Add:
    ```
    MONGODB_URI=mongodb+srv://dal198705_db_user:4IVNQ3Y1sY1LuMmF@cluster0.a9eohzp.mongodb.net/ktpilot?retryWrites=true&w=majority
    JWT_SECRET=your-secret-key-here
    GEMINI_API_KEY=AIzaSyBPfhJB5vXrk2IR4YZ4H7x0GxOO6MEEVM
    FRONTEND_URL=https://your-app.netlify.app
    ```
-8. Copy your Railway URL (e.g., `https://your-app.railway.app`)
+9. Copy your Railway URL (e.g., `https://your-app.railway.app`)
 
-**Note**: Railway automatically detects Node.js from `package.json`. No Dockerfile needed!
+**⚠️ IMPORTANT:** Your repository has both `client/` and `server/` directories. You MUST set Root Directory to `server` in Railway settings, otherwise Railway won't know which directory to build!
+
+**Note**: Railway automatically detects Node.js from `package.json` in the server directory. No Dockerfile needed!
 
 ### 2. Deploy Frontend to Netlify (5 minutes)
 
