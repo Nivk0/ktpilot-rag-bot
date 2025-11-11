@@ -10,10 +10,59 @@ const cheerio = require("cheerio");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const mongoose = require("mongoose");
+
+// Import MongoDB models
+const User = require("./models/User");
+const Document = require("./models/Document");
+const Message = require("./models/Message");
+const Contact = require("./models/Contact");
+const ResetCode = require("./models/ResetCode");
 
 dotenv.config();
 
 const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-in-production";
+
+// MongoDB Connection
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/ktpilot";
+
+mongoose.connect(MONGODB_URI)
+.then(() => {
+    console.log("✅ Connected to MongoDB Atlas");
+    const dbName = MONGODB_URI.includes('@') 
+        ? MONGODB_URI.split('@')[1].split('/')[1].split('?')[0] 
+        : MONGODB_URI.split('/').pop().split('?')[0];
+    console.log(`   Database: ${dbName || 'ktpilot'}`);
+    console.log("   All data will be shared across all computers connected to this database");
+})
+.catch((error) => {
+    console.error("❌ MongoDB connection error:", error.message);
+    console.log("⚠️  Server will continue but database operations may fail");
+    console.log("   Please check your MONGODB_URI in .env file");
+    console.log("   Make sure your IP is whitelisted in MongoDB Atlas");
+});
+
+// Initialize Google Gemini AI
+// Load API key from .env file
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+let genAI = null;
+let geminiModel = null;
+
+if (GEMINI_API_KEY && GEMINI_API_KEY !== "your-gemini-api-key-here") {
+    try {
+        genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+        // Use gemini-2.5-flash model (fast and efficient)
+        geminiModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        console.log("✅ Gemini AI initialized successfully (using gemini-2.5-flash model)");
+        console.log("   API Key loaded from .env file");
+    } catch (error) {
+        console.error("❌ Failed to initialize Gemini AI:", error.message);
+        console.log("⚠️  Falling back to rule-based responses");
+    }
+} else {
+    console.log("⚠️  GEMINI_API_KEY not set, using rule-based responses");
+}
 
 const app = express();
 const PORT = process.env.PORT || 5050;
@@ -33,11 +82,8 @@ const documentsDir = path.join(__dirname, "documents");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 if (!fs.existsSync(documentsDir)) fs.mkdirSync(documentsDir);
 
-const documentsFile = path.join(__dirname, "documents.json");
-const usersFile = path.join(__dirname, "users.json");
-const resetCodesFile = path.join(__dirname, "resetCodes.json");
-const messagesFile = path.join(__dirname, "messages.json");
-const contactsFile = path.join(__dirname, "contacts.json");
+// File paths are no longer needed - using MongoDB instead
+// Keeping for backward compatibility if needed
 
 // RAG Model: Chunk documents for better retrieval (defined early for use in document loading)
 function chunkDocument(content, docId, title) {
@@ -122,117 +168,72 @@ function chunkDocument(content, docId, title) {
   return chunks;
 }
 
-// Load documents from file
-let documents = [];
-if (fs.existsSync(documentsFile)) {
+// MongoDB Helper Functions
+// Load documents from MongoDB
+async function loadDocuments() {
   try {
-    const fileContent = fs.readFileSync(documentsFile, "utf8");
-    documents = JSON.parse(fileContent);
-    console.log(`✅ Loaded ${documents.length} document(s) from storage`);
+    const docs = await Document.find({});
+    console.log(`✅ Loaded ${docs.length} document(s) from MongoDB`);
     
-    // Validate documents have content and chunk them for RAG if needed
     let validDocs = 0;
     let totalChunks = 0;
     let needsSaving = false;
     
-    documents.forEach((doc, index) => {
+    for (const doc of docs) {
       if (!doc.content || doc.content.trim().length === 0) {
-        console.warn(`⚠️  Document ${index + 1} "${doc.title || doc.filename || 'Unknown'}" has no content`);
+        console.warn(`⚠️  Document "${doc.title || doc.filename || 'Unknown'}" has no content`);
       } else {
         validDocs++;
-        // RAG: Ensure documents are chunked (for backward compatibility with old documents)
+        // RAG: Ensure documents are chunked
         if (!doc.chunks || doc.chunks.length === 0) {
           console.log(`🔪 Chunking existing document: "${doc.title}"`);
           doc.chunks = chunkDocument(doc.content, doc.id, doc.title);
+          await doc.save();
           needsSaving = true;
         }
         totalChunks += doc.chunks ? doc.chunks.length : 0;
       }
-    });
+    }
     
     console.log(`📄 ${validDocs} document(s) have searchable content`);
     console.log(`🔪 RAG: ${totalChunks} total chunks available for retrieval`);
     
-    // Save documents with chunks if we just chunked them
     if (needsSaving) {
-      saveDocuments();
-      console.log(`💾 Saved documents with RAG chunks`);
+      console.log(`💾 Saved documents with RAG chunks to MongoDB`);
     }
-  } catch (e) {
-    console.error("❌ Error loading documents:", e.message);
-    console.log("Starting with empty document list.");
-    documents = [];
-  }
-} else {
-  console.log("📄 No documents.json file found, starting with empty document list.");
-}
-
-// Load users from file
-let users = [];
-if (fs.existsSync(usersFile)) {
-  try {
-    users = JSON.parse(fs.readFileSync(usersFile, "utf8"));
-  } catch (e) {
-    console.log("No existing users found, starting fresh.");
+    
+    return docs;
+  } catch (error) {
+    console.error("❌ Error loading documents from MongoDB:", error.message);
+    return [];
   }
 }
 
-// Load reset codes from file
-let resetCodes = [];
-if (fs.existsSync(resetCodesFile)) {
-  try {
-    resetCodes = JSON.parse(fs.readFileSync(resetCodesFile, "utf8"));
-  } catch (e) {
-    console.log("No existing reset codes found.");
-  }
-}
+// Initialize data on startup
+let documents = [];
+let isDataLoaded = false;
 
-// Load messages from file
-let messages = [];
-if (fs.existsSync(messagesFile)) {
-  try {
-    messages = JSON.parse(fs.readFileSync(messagesFile, "utf8"));
-    console.log(`💬 Loaded ${messages.length} message(s) from storage`);
-  } catch (e) {
-    console.log("No existing messages found, starting fresh.");
-  }
-}
+// Load all data when MongoDB is connected
+mongoose.connection.once('open', async () => {
+  console.log("📦 Loading data from MongoDB...");
+  documents = await loadDocuments();
+  isDataLoaded = true;
+  console.log("✅ Data loading complete");
+  console.log("🌐 Database is ready - all computers can now share data!");
+});
 
-// Load contacts from file
-let contacts = {};
-if (fs.existsSync(contactsFile)) {
-  try {
-    contacts = JSON.parse(fs.readFileSync(contactsFile, "utf8"));
-    console.log(`👥 Loaded contacts for ${Object.keys(contacts).length} user(s)`);
-  } catch (e) {
-    console.log("No existing contacts found, starting fresh.");
-  }
-}
+// Also handle reconnection
+mongoose.connection.on('connected', () => {
+  console.log("✅ MongoDB connected");
+});
 
-// Save documents to file
-function saveDocuments() {
-  fs.writeFileSync(documentsFile, JSON.stringify(documents, null, 2));
-}
+mongoose.connection.on('error', (err) => {
+  console.error("❌ MongoDB connection error:", err);
+});
 
-// Save users to file
-function saveUsers() {
-  fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
-}
-
-// Save reset codes to file
-function saveResetCodes() {
-  fs.writeFileSync(resetCodesFile, JSON.stringify(resetCodes, null, 2));
-}
-
-// Save messages to file
-function saveMessages() {
-  fs.writeFileSync(messagesFile, JSON.stringify(messages, null, 2));
-}
-
-// Save contacts to file
-function saveContacts() {
-  fs.writeFileSync(contactsFile, JSON.stringify(contacts, null, 2));
-}
+mongoose.connection.on('disconnected', () => {
+  console.log("⚠️  MongoDB disconnected");
+});
 
 // Generate a random reset code
 function generateResetCode() {
@@ -258,7 +259,7 @@ function authenticateToken(req, res, next) {
 }
 
 // Middleware to check if user is an executive
-function isExecutive(req, res, next) {
+async function isExecutive(req, res, next) {
   if (!req.user) {
     return res.status(401).json({ error: "Authentication required" });
   }
@@ -268,11 +269,15 @@ function isExecutive(req, res, next) {
     return next();
   }
   
-  // Also check in users array (for backward compatibility)
-  const user = users.find((u) => u.id === req.user.id);
-  if (user && user.role === "executive") {
-    req.user.role = "executive";
-    return next();
+  // Check in MongoDB for executive role
+  try {
+    const user = await User.findOne({ id: req.user.id });
+    if (user && user.role === "executive") {
+      req.user.role = "executive";
+      return next();
+    }
+  } catch (error) {
+    console.error("Error checking executive role:", error);
   }
   
   return res.status(403).json({ error: "Executive access required" });
@@ -395,8 +400,8 @@ function searchDocuments(query) {
         }
       }
       
-      // Only include chunks with meaningful relevance (increased threshold to filter out irrelevant documents)
-      // Require higher score to ensure we only use relevant documents
+      // Balanced: Only include chunks with meaningful relevance
+      // Require score > 8 to filter out completely irrelevant chunks, but allow more relevant content
       if (score > 8) {
         results.push({
           id: chunk.id,
@@ -416,9 +421,9 @@ function searchDocuments(query) {
   // Sort by relevance score
   results.sort((a, b) => b.score - a.score);
   
-  // Return top chunks (RAG typically uses top-k retrieval)
-  // Increased to get more chunks from all documents, not just the most recent
-  const topK = 20; // Retrieve top 20 most relevant chunks from all documents
+  // Return top chunks for answer generation
+  // Retrieve top 12 most relevant chunks - we'll process 5-6 for balanced answers
+  const topK = 12;
   return results.slice(0, topK);
 }
 
@@ -485,8 +490,8 @@ app.post("/api/auth/signup", async (req, res) => {
         // Normalize email to lowercase and trim
         email = email.toLowerCase().trim();
 
-        // Check if user already exists
-        const existingUser = users.find((u) => u.email === email);
+        // Check if user already exists in MongoDB
+        const existingUser = await User.findOne({ email: email });
         if (existingUser) {
             return res.status(400).json({ error: "User with this email already exists" });
         }
@@ -494,18 +499,16 @@ app.post("/api/auth/signup", async (req, res) => {
         // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // Create user
-        const user = {
+        // Create user in MongoDB
+        const user = new User({
             id: Date.now().toString(),
             email: email,
             name: name || email.split("@")[0],
             password: hashedPassword,
             role: "user", // Default role, can be changed to "executive" manually
-            createdAt: new Date().toISOString(),
-        };
+        });
 
-        users.push(user);
-        saveUsers();
+        await user.save();
 
         // Generate JWT token
         const token = jwt.sign(
@@ -547,8 +550,8 @@ app.post("/api/auth/login", async (req, res) => {
         // Normalize email to lowercase and trim
         email = email.toLowerCase().trim();
 
-        // Find user
-        const user = users.find((u) => u.email === email);
+        // Find user in MongoDB
+        const user = await User.findOne({ email: email });
         if (!user) {
             return res.status(404).json({ 
                 error: "Account not found",
@@ -589,20 +592,25 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 // Verify token
-app.get("/api/auth/verify", authenticateToken, (req, res) => {
-    // Get full user data including role
-    const user = users.find((u) => u.id === req.user.id);
-    const userRole = user ? (user.role || "user") : (req.user.role || "user");
-    
-    res.json({
-        valid: true,
-        user: {
-            id: req.user.id,
-            email: req.user.email,
-            name: req.user.name,
-            role: userRole,
-        },
-    });
+app.get("/api/auth/verify", authenticateToken, async (req, res) => {
+    try {
+        // Get full user data including role from MongoDB
+        const user = await User.findOne({ id: req.user.id });
+        const userRole = user ? (user.role || "user") : (req.user.role || "user");
+        
+        res.json({
+            valid: true,
+            user: {
+                id: req.user.id,
+                email: req.user.email,
+                name: req.user.name,
+                role: userRole,
+            },
+        });
+    } catch (error) {
+        console.error("Error verifying token:", error);
+        res.status(500).json({ error: "Failed to verify token" });
+    }
 });
 
 // Email configuration (for password reset)
@@ -737,8 +745,8 @@ app.post("/api/auth/request-reset-code", async (req, res) => {
         // Normalize email to lowercase and trim
         email = email.toLowerCase().trim();
 
-        // Find user
-        const user = users.find((u) => u.email === email);
+        // Find user in MongoDB
+        const user = await User.findOne({ email: email });
         if (!user) {
             // Don't reveal if user exists or not for security
             // But still return a generic message
@@ -752,18 +760,15 @@ app.post("/api/auth/request-reset-code", async (req, res) => {
         const code = generateResetCode();
         const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
 
-        // Remove any existing codes for this email
-        resetCodes = resetCodes.filter((rc) => rc.email !== email);
+        // Remove any existing codes for this email from MongoDB
+        await ResetCode.deleteMany({ email: email });
 
-        // Add new reset code
-        resetCodes.push({
+        // Add new reset code to MongoDB
+        await ResetCode.create({
             email: email,
-            code,
-            expiresAt: expiresAt.toISOString(),
-            createdAt: new Date().toISOString(),
+            code: code,
+            expiresAt: expiresAt,
         });
-
-        saveResetCodes();
 
         console.log(`🔑 Reset code generated for ${email}: ${code}`);
 
@@ -839,15 +844,16 @@ app.post("/api/auth/reset-password", async (req, res) => {
             return res.status(400).json({ error: "Password must be at least 6 characters" });
         }
 
-        // Find reset code
-        const resetCode = resetCodes.find(
-            (rc) => rc.email === email && rc.code === code
-        );
+        // Find reset code in MongoDB
+        const resetCode = await ResetCode.findOne({
+            email: email,
+            code: code
+        });
 
         if (!resetCode) {
             console.log(`❌ Invalid reset code attempt for ${email} with code ${code}`);
             // Check if there are any codes for this email to give better error message
-            const codesForEmail = resetCodes.filter((rc) => rc.email === email);
+            const codesForEmail = await ResetCode.find({ email: email });
             if (codesForEmail.length > 0) {
                 return res.status(400).json({ error: "Invalid reset code. Please check the code and try again." });
             }
@@ -856,31 +862,28 @@ app.post("/api/auth/reset-password", async (req, res) => {
 
         // Check if code is expired
         const now = new Date();
-        const expiresAt = new Date(resetCode.expiresAt);
-        if (expiresAt < now) {
+        if (resetCode.expiresAt < now) {
             // Remove expired code
-            resetCodes = resetCodes.filter((rc) => rc !== resetCode);
-            saveResetCodes();
+            await ResetCode.deleteOne({ _id: resetCode._id });
             console.log(`❌ Expired reset code used for ${email}`);
             return res.status(400).json({ error: "Reset code has expired. Please request a new code." });
         }
 
-        // Find user
-        const userIndex = users.findIndex((u) => u.email === email);
-        if (userIndex === -1) {
+        // Find user in MongoDB
+        const user = await User.findOne({ email: email });
+        if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
 
         // Hash new password
         const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-        // Update user password
-        users[userIndex].password = hashedPassword;
-        saveUsers();
+        // Update user password in MongoDB
+        user.password = hashedPassword;
+        await user.save();
 
         // Remove used reset code
-        resetCodes = resetCodes.filter((rc) => rc !== resetCode);
-        saveResetCodes();
+        await ResetCode.deleteOne({ _id: resetCode._id });
 
         console.log(`✅ Password reset successful for ${email}`);
 
@@ -905,8 +908,8 @@ app.post("/api/auth/executive/generate-reset-code", authenticateToken, isExecuti
         // Normalize email to lowercase and trim
         email = email.toLowerCase().trim();
 
-        // Find user
-        const user = users.find((u) => u.email === email);
+        // Find user in MongoDB
+        const user = await User.findOne({ email: email });
         if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
@@ -915,19 +918,16 @@ app.post("/api/auth/executive/generate-reset-code", authenticateToken, isExecuti
         const code = generateResetCode();
         const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
 
-        // Remove any existing codes for this email
-        resetCodes = resetCodes.filter((rc) => rc.email !== email);
+        // Remove any existing codes for this email from MongoDB
+        await ResetCode.deleteMany({ email: email });
 
-        // Add new reset code
-        resetCodes.push({
+        // Add new reset code to MongoDB
+        await ResetCode.create({
             email: email,
-            code,
-            expiresAt: expiresAt.toISOString(),
-            createdAt: new Date().toISOString(),
+            code: code,
+            expiresAt: expiresAt,
             generatedBy: req.user.email, // Track which executive generated it
         });
-
-        saveResetCodes();
 
         console.log(`🔑 Executive ${req.user.email} generated reset code for ${email}`);
 
@@ -1006,11 +1006,8 @@ app.post("/api/upload", authenticateToken, upload.single("file"), async (req, re
         
         // RAG: Chunk the document for better retrieval
         console.log("🔪 Chunking document for RAG retrieval...");
-        doc.chunks = chunkDocument(doc.content, doc.id, doc.title);
-        console.log(`✅ Created ${doc.chunks.length} chunks from document`);
-        
-        documents.push(doc);
-        saveDocuments();
+        const chunks = chunkDocument(doc.content, doc.id, doc.title);
+        console.log(`✅ Created ${chunks.length} chunks from document`);
         
         // Move file to documents directory
         const destPath = path.join(documentsDir, `${doc.id}_${req.file.originalname}`);
@@ -1023,8 +1020,24 @@ app.post("/api/upload", authenticateToken, upload.single("file"), async (req, re
             }
         }
         
+        // Save to MongoDB
+        const document = new Document({
+            id: doc.id,
+            title: doc.title,
+            filename: doc.filename,
+            content: doc.content,
+            uploadedAt: doc.uploadedAt,
+            filePath: doc.filePath,
+            chunks: chunks
+        });
+        
+        await document.save();
+        
+        // Update in-memory cache
+        documents.push(document.toObject());
+        
         const wordCount = doc.content.split(/\s+/).length;
-        console.log(`✅ Document processed: ${doc.title}`);
+        console.log(`✅ Document processed and saved to MongoDB: ${doc.title}`);
         console.log(`   Content: ${content.length} chars, ${wordCount} words`);
         console.log(`📚 Total documents now: ${documents.length}`);
         
@@ -1048,39 +1061,62 @@ app.post("/api/upload", authenticateToken, upload.single("file"), async (req, re
 });
 
 // List all documents
-app.get("/api/documents", authenticateToken, (req, res) => {
-    const docList = documents.map((doc) => ({
-        id: doc.id,
-        title: doc.title,
-        filename: doc.filename,
-        uploadedAt: doc.uploadedAt,
-        contentLength: doc.content.length,
-    }));
-    res.json({ documents: docList });
+app.get("/api/documents", authenticateToken, async (req, res) => {
+    try {
+        // Get from MongoDB to ensure latest data
+        const docs = await Document.find({}).select('id title filename uploadedAt content');
+        const docList = docs.map((doc) => ({
+            id: doc.id,
+            title: doc.title,
+            filename: doc.filename,
+            uploadedAt: doc.uploadedAt,
+            contentLength: doc.content ? doc.content.length : 0,
+        }));
+        // Update in-memory cache
+        documents = docs.map(d => d.toObject());
+        res.json({ documents: docList });
+    } catch (error) {
+        console.error("Error listing documents:", error);
+        res.status(500).json({ error: "Failed to list documents" });
+    }
 });
 
 // Get a specific document
-app.get("/api/documents/:id", authenticateToken, (req, res) => {
-    const doc = documents.find((d) => d.id === req.params.id);
-    if (!doc) return res.status(404).json({ error: "Document not found" });
-    
-    res.json({
-        id: doc.id,
-        title: doc.title,
-        filename: doc.filename,
-        content: doc.content,
-        uploadedAt: doc.uploadedAt,
-    });
+app.get("/api/documents/:id", authenticateToken, async (req, res) => {
+    try {
+        const doc = await Document.findOne({ id: req.params.id });
+        if (!doc) return res.status(404).json({ error: "Document not found" });
+        
+        res.json({
+            id: doc.id,
+            title: doc.title,
+            filename: doc.filename,
+            content: doc.content,
+            uploadedAt: doc.uploadedAt,
+        });
+    } catch (error) {
+        console.error("Error getting document:", error);
+        res.status(500).json({ error: "Failed to get document" });
+    }
 });
 
 // Search documents
-app.post("/api/search", authenticateToken, (req, res) => {
-    const { query } = req.body || {};
-    if (!query) return res.status(400).json({ error: "Query required" });
-    
-    console.log("🔍 Searching for:", query);
-    const results = searchDocuments(query);
-    res.json({ results, query });
+app.post("/api/search", authenticateToken, async (req, res) => {
+    try {
+        const { query } = req.body || {};
+        if (!query) return res.status(400).json({ error: "Query required" });
+        
+        // Refresh documents from MongoDB to ensure we have latest data
+        const docs = await Document.find({});
+        documents = docs.map(d => d.toObject());
+        
+        console.log("🔍 Searching for:", query);
+        const results = searchDocuments(query);
+        res.json({ results, query });
+    } catch (error) {
+        console.error("Error searching documents:", error);
+        res.status(500).json({ error: "Failed to search documents" });
+    }
 });
 
 // Generate general knowledge answer for any question
@@ -1358,84 +1394,92 @@ app.post("/api/ask", authenticateToken, async (req, res) => {
     if (!query) return res.status(400).json({ error: "Query required" });
     
     console.log("💬 User asked:", query);
+    
+    // Refresh documents from MongoDB to ensure we have latest data
+    try {
+        const docs = await Document.find({});
+        documents = docs.map(d => d.toObject());
+    } catch (error) {
+        console.error("Error loading documents:", error);
+    }
+    
     console.log(`📚 Total documents available: ${documents.length}`);
     
     let answer = "";
     let sources = [];
-    let useDocumentAnswer = false;
     
-    // Check if query is a greeting or math (these can use general knowledge even with documents)
     const queryLower = query.toLowerCase().trim();
-    const isGreeting = /^(hi|hello|hey|greetings|good morning|good afternoon|good evening|how are you|how's it going|what's up|thanks|thank you|thx)/i.test(queryLower);
     const isMath = /^[\d\+\-\*\/\(\)\.\s]+$/.test(queryLower.replace(/\s/g, '')) || /(?:what is|calculate|compute|solve|evaluate)\s+[\d\+\-\*\/\(\)\.\s]+/i.test(queryLower);
     
-    // First, try to answer from documents if available
-    if (documents.length > 0) {
-        // Search documents for relevant content
-        const searchResults = searchDocuments(query);
+    // Always use Gemini AI with general knowledge
+    // If documents are available and relevant, include them as context
+    if (geminiModel && !isMath) {
+        // Search documents for relevant content (if documents exist)
+        let documentContext = '';
+        let relevantChunks = [];
         
-        console.log(`🔍 Found ${searchResults.length} relevant document chunk(s) for query: "${query}"`);
-        if (searchResults.length > 0) {
-            console.log(`   Top result: "${searchResults[0].title}" (score: ${searchResults[0].score})`);
+        if (documents.length > 0) {
+            const searchResults = searchDocuments(query);
+            console.log(`🔍 Found ${searchResults.length} relevant document chunk(s) for query: "${query}"`);
+            
+            if (searchResults.length > 0 && searchResults[0].score > 3) {
+                // Include relevant document chunks as context (lower threshold to include more context)
+                const chunksToUse = searchResults.filter(r => r.score > 3).slice(0, 8);
+                relevantChunks = extractRelevantChunks(chunksToUse, 8);
+                
+                // Format document context
+                const contextByDoc = {};
+                relevantChunks.forEach(chunk => {
+                    const docTitle = chunk.title || 'Document';
+                    if (!contextByDoc[docTitle]) {
+                        contextByDoc[docTitle] = [];
+                    }
+                    contextByDoc[docTitle].push(chunk.chunk.substring(0, 500)); // Limit chunk size
+                });
+                
+                documentContext = Object.entries(contextByDoc)
+                    .map(([title, chunks]) => {
+                        return `[From: ${title}]\n${chunks.join('\n\n')}`;
+                    })
+                    .join('\n\n---\n\n');
+                
+                // Include sources
+                sources = relevantChunks.slice(0, 3).map((r) => ({
+                    id: r.docId,
+                    title: r.title,
+                    filename: r.filename,
+                    snippet: r.chunk.substring(0, 150) + '...',
+                    score: r.score,
+                }));
+                
+                console.log(`📄 Including ${relevantChunks.length} document chunk(s) as context`);
+            }
         }
         
-        // RAG: Use chunk-based retrieval results
-        // Increased threshold to 15 to ensure we only use highly relevant documents
-        // This filters out irrelevant documents and ensures answers are specific
-        if (searchResults.length > 0 && searchResults[0].score > 15) {
-            useDocumentAnswer = true;
-            // Filter chunks to only include highly relevant ones (score > 12)
-            const highlyRelevantChunks = searchResults.filter(r => r.score > 12);
-            // Extract top relevant chunks from relevant documents only
-            const topChunks = extractRelevantChunks(highlyRelevantChunks.length > 0 ? highlyRelevantChunks : searchResults, 10);
-            answer = generateRAGAnswer(query, topChunks);
-            sources = topChunks.map((r) => ({
-                id: r.docId,
-                title: r.title,
-                filename: r.filename,
-                snippet: r.chunk.substring(0, 200) + '...',
-                score: r.score,
-            }));
-            const uniqueDocs = new Set(topChunks.map(c => c.docId));
-            console.log(`✅ Generated RAG answer from ${topChunks.length} chunk(s) across ${uniqueDocs.size} relevant document(s): ${Array.from(uniqueDocs).map(id => {
-                const doc = documents.find(d => d.id === id);
-                return doc ? doc.title : id;
-            }).join(', ')}`);
-        } else if (searchResults.length > 0 && searchResults[0].score > 10) {
-            // Moderate relevance - still filter to ensure relevance
-            useDocumentAnswer = true;
-            const relevantChunks = searchResults.filter(r => r.score > 8);
-            const topChunks = extractRelevantChunks(relevantChunks.length > 0 ? relevantChunks : searchResults, 8);
-            answer = generateRAGAnswer(query, topChunks);
-            sources = topChunks.map((r) => ({
-                id: r.docId,
-                title: r.title,
-                filename: r.filename,
-                snippet: r.chunk.substring(0, 200) + '...',
-                score: r.score,
-            }));
-            const uniqueDocs = new Set(topChunks.map(c => c.docId));
-            console.log(`✅ Generated RAG answer from moderate match: ${topChunks.length} chunk(s) across ${uniqueDocs.size} relevant document(s)`);
-        }
-    }
-    
-    // Only use general knowledge if:
-    // 1. No documents available, OR
-    // 2. Documents exist but no match found AND it's a greeting/math, OR
-    // 3. No documents and it's any question
-    if (!useDocumentAnswer) {
-        if (documents.length > 0 && !isGreeting && !isMath) {
-            // Documents exist but no match found - tell user it's not in documents
-            console.log(`📚 No relevant information found in documents for: "${query}"`);
-            answer = "I couldn't find this information in your uploaded documents.";
+        // Generate answer using Gemini with document context (if available) + general knowledge
+        const geminiAnswer = await generateAnswerWithGemini(query, documentContext, documentContext.length > 0);
+        
+        if (geminiAnswer) {
+            answer = geminiAnswer;
+            if (documentContext.length > 0) {
+                console.log(`✅ Used Gemini AI with document context + general knowledge`);
+            } else {
+                console.log(`✅ Used Gemini AI with general knowledge`);
+            }
         } else {
-            // No documents or it's a greeting/math - use general knowledge
-            console.log(`🤖 Using general knowledge to answer: "${query}"`);
+            // Fallback to rule-based if Gemini fails
+            console.log(`⚠️  Gemini failed, using rule-based fallback`);
             answer = generateGeneralAnswer(query);
-            console.log(`✅ Generated general answer (${answer.length} chars)`);
         }
     } else {
-        console.log(`📚 Using document-based answer for: "${query}"`);
+        // Math calculations or Gemini not available - use rule-based
+        if (isMath) {
+            answer = generateGeneralAnswer(query);
+            console.log(`🔢 Using rule-based math calculation`);
+        } else {
+            answer = generateGeneralAnswer(query);
+            console.log(`⚠️  Gemini not available, using rule-based answer`);
+        }
     }
     
     res.json({
@@ -1528,8 +1572,430 @@ function filterByPersonName(text, personName) {
     return "";
 }
 
+// Extract key entities/nouns from query (excluding stop words and question words)
+function extractKeyEntities(query) {
+    const queryLower = query.toLowerCase();
+    const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'who', 'when', 'where', 'why', 'how', 'tell', 'me', 'about', 'give', 'information']);
+    
+    // Extract words that are likely entities (nouns, proper nouns, etc.)
+    const words = queryLower.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
+    
+    // Also extract quoted phrases and capitalized words (likely proper nouns)
+    const quoted = query.match(/"([^"]+)"/gi) || [];
+    const capitalized = query.split(/\s+/).filter(w => /^[A-Z]/.test(w) && w.length > 2);
+    
+    const entities = new Set([
+        ...words,
+        ...quoted.map(q => q.replace(/"/g, '').toLowerCase()),
+        ...capitalized.map(c => c.toLowerCase())
+    ]);
+    
+    return Array.from(entities).filter(e => e.length > 2);
+}
+
+// Extract relevant sentences from a chunk that answer the specific query
+function extractRelevantSentences(chunkContent, query, queryTerms, questionType, personName = null) {
+    if (!chunkContent || chunkContent.trim().length === 0) {
+        return [];
+    }
+    
+    // If query is about a person, filter chunk first
+    if (personName) {
+        chunkContent = filterByPersonName(chunkContent, personName);
+        if (!chunkContent || chunkContent.trim().length < 10) {
+            return [];
+        }
+    }
+    
+    // Split into sentences using simple but effective method
+    // Replace sentence endings with a marker, then split
+    let normalizedContent = chunkContent
+        .replace(/([.!?]+)\s+/g, '$1|SENTENCE_END|')
+        .replace(/\s+/g, ' ')
+        .trim();
+    
+    const allSentences = normalizedContent
+        .split('|SENTENCE_END|')
+        .map(s => s.trim())
+        .filter(s => {
+            // Filter out very short or empty sentences
+            if (s.length < 10) return false;
+            // Filter out sentences that are just punctuation
+            if (!/[a-zA-Z]/.test(s)) return false;
+            return true;
+        })
+        .map(s => {
+            // Ensure sentence ends with punctuation
+            if (!/[.!?]$/.test(s)) {
+                s += '.';
+            }
+            return s;
+        });
+    
+    if (allSentences.length === 0) {
+        return [];
+    }
+    
+    // Keep sentences with index for context extraction
+    const sentences = allSentences.map((s, idx) => ({ text: s, index: idx }));
+    
+    const queryLower = query.toLowerCase();
+    const relevantSentences = [];
+    const usedSentences = new Set();
+    
+    // Extract key entities for scoring (not required, but boosts score)
+    const keyEntities = extractKeyEntities(query);
+    
+    // Score each sentence for relevance - BALANCED approach
+    sentences.forEach(sentObj => {
+        const sentence = sentObj.text;
+        const sentenceLower = sentence.toLowerCase();
+        let relevanceScore = 0;
+        let hasQueryTerms = false;
+        
+        // Check for exact query phrase (highest priority)
+        if (sentenceLower.includes(queryLower)) {
+            relevanceScore += 200;
+            hasQueryTerms = true;
+        }
+        
+        // Check for query terms (more flexible - at least one term needed)
+        if (queryTerms.length > 0) {
+            const matchingTerms = queryTerms.filter(term => {
+                // Check for exact word match or partial match for longer words
+                return sentenceLower.includes(term) || 
+                       (term.length > 4 && sentenceLower.includes(term.substring(0, term.length - 1)));
+            }).length;
+            const termRatio = matchingTerms / queryTerms.length;
+            
+            if (matchingTerms > 0) {
+                hasQueryTerms = true;
+                // Score based on how many terms match (more flexible)
+                relevanceScore += matchingTerms * 30; // Score per matching term
+                relevanceScore += termRatio * 50; // Bonus for high ratio
+            }
+        }
+        
+        // Skip sentences with no query terms at all
+        if (!hasQueryTerms && !sentenceLower.includes(queryLower)) {
+            return;
+        }
+        
+        // Check for key entities (bonus, not required)
+        if (keyEntities.length > 0) {
+            const matchingEntities = keyEntities.filter(entity => sentenceLower.includes(entity)).length;
+            if (matchingEntities > 0) {
+                const entityRatio = matchingEntities / keyEntities.length;
+                relevanceScore += entityRatio * 60; // Bonus for entity matches
+            }
+        }
+        
+        // Question-type specific bonuses (not required, just bonuses)
+        if (questionType === 'what' && (sentenceLower.includes('is') || sentenceLower.includes('are') || sentenceLower.includes('refers') || sentenceLower.includes('means'))) {
+            relevanceScore += 25;
+        }
+        if (questionType === 'who' && (sentenceLower.includes('is') || sentenceLower.includes('are') || /\b(name|person|member|executive|president|director|officer)\b/i.test(sentence))) {
+            relevanceScore += 25;
+        }
+        if (questionType === 'when' && (/\d{4}|\d{1,2}\/\d{1,2}|\d{1,2}-\d{1,2}|(january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday|date|time)\b/i.test(sentence))) {
+            relevanceScore += 25;
+        }
+        if (questionType === 'where' && (/\b(in|at|located|address|venue|place|location)\b/i.test(sentence))) {
+            relevanceScore += 25;
+        }
+        if (questionType === 'how' && (/\b(how|method|process|step|way|procedure|by|through)\b/i.test(sentence))) {
+            relevanceScore += 25;
+        }
+        if (questionType === 'why' && (/\b(because|reason|since|due to|for|because of)\b/i.test(sentence))) {
+            relevanceScore += 25;
+        }
+        
+        // Count word frequency in sentence (bonus for multiple mentions)
+        queryTerms.forEach(term => {
+            const matches = (sentenceLower.match(new RegExp(`\\b${term}\\b`, 'gi')) || []).length;
+            relevanceScore += matches * 5;
+        });
+        
+        // Include sentences with meaningful relevance (lower threshold - more flexible)
+        // Minimum score of 15 to filter out completely irrelevant sentences
+        if (relevanceScore >= 15) {
+            const sentenceKey = sentence.substring(0, 100).toLowerCase();
+            if (!usedSentences.has(sentenceKey)) {
+                relevantSentences.push({
+                    sentence: sentence.trim(),
+                    score: relevanceScore,
+                    index: sentObj.index
+                });
+                usedSentences.add(sentenceKey);
+            }
+        }
+    });
+    
+    // Sort by relevance score
+    relevantSentences.sort((a, b) => b.score - a.score);
+    
+    // Include adjacent sentences for context (if a highly relevant sentence is found, include neighbors)
+    const finalSentences = new Set();
+    const addedIndices = new Set();
+    
+    // Add top scoring sentences and their neighbors for context
+    relevantSentences.slice(0, 3).forEach(sentObj => {
+        const idx = sentObj.index;
+        
+        // Add the sentence itself
+        if (!addedIndices.has(idx)) {
+            finalSentences.add(sentObj.sentence);
+            addedIndices.add(idx);
+        }
+        
+        // Add previous sentence for context (if exists and not too long)
+        if (idx > 0 && !addedIndices.has(idx - 1) && idx - 1 < allSentences.length) {
+            const prevSentence = allSentences[idx - 1];
+            if (prevSentence && prevSentence.length < 200) {
+                finalSentences.add(prevSentence);
+                addedIndices.add(idx - 1);
+            }
+        }
+        
+        // Add next sentence for context (if exists and not too long)
+        if (idx < allSentences.length - 1 && !addedIndices.has(idx + 1)) {
+            const nextSentence = allSentences[idx + 1];
+            if (nextSentence && nextSentence.length < 200) {
+                finalSentences.add(nextSentence);
+                addedIndices.add(idx + 1);
+            }
+        }
+    });
+    
+    // Add remaining high-scoring sentences if we don't have enough
+    if (finalSentences.size < 3) {
+        relevantSentences.forEach(sentObj => {
+            if (finalSentences.size >= 5) return;
+            if (!addedIndices.has(sentObj.index)) {
+                finalSentences.add(sentObj.sentence);
+                addedIndices.add(sentObj.index);
+            }
+        });
+    }
+    
+    // Return sentences - prioritize by score, then maintain order
+    // Convert to array and sort by original index to maintain flow
+    const sentenceArray = Array.from(finalSentences).map(s => {
+        const idx = allSentences.findIndex(orig => orig === s);
+        return { text: s, index: idx >= 0 ? idx : 999 };
+    });
+    sentenceArray.sort((a, b) => a.index - b.index);
+    return sentenceArray.slice(0, 5).map(s => s.text); // Return up to 5 sentences
+}
+
+// Helper function to detect if question needs paragraph or straightforward answer
+function needsParagraphAnswer(query) {
+    const queryLower = query.toLowerCase();
+    
+    // Simple/factual questions that need straightforward answers
+    const simplePatterns = [
+        /^(what is|what are|what was|what were|who is|who are|when is|when was|where is|where are)\s+/i,
+        /^(how much|how many|how old|how long|how tall|how wide|how high)\s+/i,
+        /^(yes|no|true|false|correct|incorrect)\s*/i,
+        /^(what time|what date|what day|what year)\s+/i,
+        /^(which|name|list|tell me one|give me one)\s+/i,
+    ];
+    
+    // Complex questions that need paragraph answers
+    const complexPatterns = [
+        /^(explain|describe|discuss|tell me about|what do you know about|can you explain|how does|how do|why does|why do|why is|why are)\s+/i,
+        /^(what are the|what is the|tell me more about|can you tell me more|elaborate|expand on)\s+/i,
+        /^(compare|contrast|difference between|similarities|differences)\s+/i,
+        /^(how to|how can|how should|how would|what should|what would|what can)\s+/i,
+    ];
+    
+    // Check for complex patterns first
+    for (const pattern of complexPatterns) {
+        if (pattern.test(queryLower)) {
+            return true; // Needs paragraph
+        }
+    }
+    
+    // Check for simple patterns
+    for (const pattern of simplePatterns) {
+        if (pattern.test(queryLower)) {
+            return false; // Needs straightforward answer
+        }
+    }
+    
+    // Default: if question is long or has multiple parts, use paragraph
+    if (query.split(/\s+/).length > 8 || query.includes('?') && query.split('?').length > 1) {
+        return true;
+    }
+    
+    // Default to straightforward for short questions
+    return false;
+}
+
+// Helper function to generate answer using Gemini AI
+async function generateAnswerWithGemini(query, context, isDocumentBased = true) {
+    if (!geminiModel) {
+        return null; // Gemini not available, return null to use fallback
+    }
+    
+    try {
+        let prompt = '';
+        const useParagraph = needsParagraphAnswer(query);
+        
+        if (isDocumentBased && context.length > 0) {
+            // For answers with document context, use both documents and general knowledge
+            if (useParagraph) {
+                prompt = `You are KTPilot, a helpful AI assistant for Kappa Theta Pi. Answer the user's question using BOTH the information from uploaded documents (if relevant) AND your general knowledge.
+
+**USER'S QUESTION:**
+${query}
+
+**RELEVANT INFORMATION FROM DOCUMENTS (if applicable):**
+${context}
+
+**YOUR TASK:**
+Provide a comprehensive, flowing paragraph-style answer that thoroughly addresses the question. Write in natural, conversational paragraphs that connect ideas smoothly. Use the document information when relevant, and supplement with your general knowledge to provide a complete, well-rounded answer.
+
+**RESPONSE FORMAT:**
+- Write in flowing paragraphs (3-5 sentences per paragraph)
+- Connect ideas naturally with transitions
+- Provide context and background information
+- Explain concepts thoroughly
+- Use natural, conversational language
+- Maximum 400 words
+
+**EXAMPLE:**
+[Write a flowing paragraph that explains the topic comprehensively, connecting ideas smoothly and providing context...]
+
+Now generate your paragraph-style answer:`;
+            } else {
+                prompt = `You are KTPilot, a helpful AI assistant for Kappa Theta Pi. Answer the user's question using BOTH the information from uploaded documents (if relevant) AND your general knowledge.
+
+**USER'S QUESTION:**
+${query}
+
+**RELEVANT INFORMATION FROM DOCUMENTS (if applicable):**
+${context}
+
+**YOUR TASK:**
+Provide a direct, straightforward answer to the question. Be concise and to the point. Use the document information when relevant, and supplement with your general knowledge if needed.
+
+**RESPONSE FORMAT:**
+- Give a direct answer (1-3 sentences)
+- Be specific and factual
+- No unnecessary elaboration
+- If listing items, use simple bullet points
+- Maximum 150 words
+
+**EXAMPLE:**
+[Direct, concise answer to the question]
+
+Now generate your straightforward answer:`;
+            }
+        } else {
+            // For general knowledge questions (no document context) - includes greetings
+            // Check if it's a greeting for special handling
+            const isGreeting = /^(hi|hello|hey|greetings|good morning|good afternoon|good evening|good night|how are you|how's it going|what's up|whats up|sup|yo|hii|helloo|hey there|hi there)/i.test(query.trim());
+            
+            if (isGreeting) {
+                prompt = `You are KTPilot, a friendly and helpful AI assistant for Kappa Theta Pi. The user just greeted you.
+
+**USER'S GREETING:**
+${query}
+
+**YOUR TASK:**
+Respond warmly and naturally to their greeting. Be friendly, welcoming, and let them know you're ready to help with questions about KTP, events, documents, FAQs, or anything else they need. Keep it concise (1-2 sentences) and conversational.
+
+**EXAMPLE RESPONSES:**
+- "Hello! I'm KTPilot, your AI assistant for Kappa Theta Pi. How can I help you today?"
+- "Hi there! I'm here to help with KTP-related questions, events, documents, and more. What would you like to know?"
+- "Hey! Great to meet you. I'm KTPilot, ready to assist with any KTP questions or information you need."
+
+Now respond warmly:`;
+            } else {
+                // Determine if question needs paragraph or straightforward answer
+                if (useParagraph) {
+                    prompt = `You are KTPilot, a helpful AI assistant for Kappa Theta Pi. Answer the user's question using your general knowledge.
+
+**USER'S QUESTION:**
+${query}
+
+**YOUR TASK:**
+Provide a well-structured, easy-to-read answer that directly addresses the question. Use your general knowledge to provide helpful, accurate information.
+
+**STRUCTURE YOUR RESPONSE:**
+
+1. **Direct Answer**: Start with a clear, direct answer (1-2 sentences)
+
+2. **Detailed Explanation**: 
+   - Use bullet points (•) or dashes (-) for lists
+   - Use numbered lists (1., 2., 3.) for steps or sequences
+   - Organize information logically
+   - Use line breaks between different topics
+
+3. **Formatting**:
+   - Keep paragraphs short (2-3 sentences)
+   - Use bullet points for multiple items
+   - Use bold for emphasis: **important point**
+   - Make it easy to scan and read
+
+4. **Content**:
+   - Be accurate and helpful
+   - Be concise but comprehensive (under 300 words)
+   - Use natural, conversational language
+   - If you don't know, say so honestly
+
+**EXAMPLE FORMAT:**
+[Direct answer]
+
+• Key point 1
+• Key point 2
+• Key point 3
+
+[Additional context if needed]
+
+Now generate your answer:`;
+                } else {
+                    prompt = `You are KTPilot, a helpful AI assistant for Kappa Theta Pi. Answer the user's question using your general knowledge.
+
+**USER'S QUESTION:**
+${query}
+
+**YOUR TASK:**
+Provide a direct, straightforward answer to the question. Be concise and to the point.
+
+**RESPONSE FORMAT:**
+- Give a direct answer (1-3 sentences)
+- Be specific and factual
+- No unnecessary elaboration
+- If listing items, use simple bullet points
+- Maximum 150 words
+
+**EXAMPLE:**
+[Direct, concise answer to the question]
+
+Now generate your straightforward answer:`;
+                }
+            }
+        }
+        
+        console.log("🤖 Calling Gemini API with prompt length:", prompt.length);
+        const result = await geminiModel.generateContent(prompt);
+        const response = await result.response;
+        const answer = response.text();
+        
+        console.log("✅ Gemini API response received, length:", answer.length);
+        return answer.trim();
+    } catch (error) {
+        console.error("❌ Gemini API error:", error.message);
+        console.error("❌ Error details:", error);
+        // Don't fail completely - return null to use fallback
+        return null;
+    }
+}
+
 // RAG Model: Generate detailed, specific answer from retrieved chunks (only from relevant documents)
-function generateRAGAnswer(query, chunkResults) {
+async function generateRAGAnswer(query, chunkResults) {
     if (chunkResults.length === 0) {
         return "I couldn't find any relevant information in the uploaded documents.";
     }
@@ -1544,77 +2010,139 @@ function generateRAGAnswer(query, chunkResults) {
     const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'who', 'when', 'where', 'why', 'how']);
     const queryTerms = queryLower.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
     
-    // Extract the most relevant information from chunks
-    const usedContent = new Set();
-    let combinedInfo = "";
+    // Extract only relevant sentences from chunks, not entire chunks
+    const relevantSentences = [];
+    const usedSentences = new Set();
+    // Process more chunks for better context with Gemini (8-10 chunks)
+    const maxChunksToProcess = Math.min(chunkResults.length, personName ? 10 : 8);
     
-    // Process chunks in order of relevance, filtering for high relevance
-    const maxChunks = personName ? 10 : 8;
-    let processedCount = 0;
-    
-    chunkResults.forEach((chunkResult, index) => {
-        if (processedCount >= maxChunks) return;
+    // Process chunks in order of relevance
+    for (let i = 0; i < maxChunksToProcess && i < chunkResults.length; i++) {
+        const chunkResult = chunkResults[i];
         
-        let chunkContent = chunkResult.chunk;
-        const chunkLower = chunkContent.toLowerCase();
+        // Basic chunk-level relevance check (more lenient)
+        const chunkLower = chunkResult.chunk.toLowerCase();
         
-        // Check relevance: chunk should contain at least some query terms
+        // Check if chunk contains at least some query terms (more flexible)
         if (queryTerms.length > 0) {
             const matchingTerms = queryTerms.filter(term => chunkLower.includes(term)).length;
-            const relevanceRatio = matchingTerms / queryTerms.length;
-            
-            // Skip chunks with low relevance (less than 30% of query terms match)
-            if (relevanceRatio < 0.3 && chunkResult.score < 15) {
-                return;
+            // If chunk has very low score and no matching terms, skip it
+            if (matchingTerms === 0 && chunkResult.score < 8) {
+                continue;
             }
         }
         
-        // If query is about a person, filter chunk to only include that person's info
-        if (personName) {
-            chunkContent = filterByPersonName(chunkContent, personName);
-            // Skip if filtering removed all content
-            if (!chunkContent || chunkContent.trim().length < 10) {
-                return;
+        // Extract relevant sentences from this chunk
+        const sentences = extractRelevantSentences(
+            chunkResult.chunk,
+            query,
+            queryTerms,
+            questionType,
+            personName
+        );
+        
+        // Add unique, relevant sentences with document metadata
+        sentences.forEach(sentence => {
+            const sentenceKey = sentence.substring(0, 150).toLowerCase();
+            if (!usedSentences.has(sentenceKey) && sentence.trim().length > 10) {
+                relevantSentences.push({
+                    text: sentence.trim(),
+                    docTitle: chunkResult.title || 'Document',
+                    docId: chunkResult.docId,
+                    filename: chunkResult.filename || ''
+                });
+                usedSentences.add(sentenceKey);
+                
+                // Limit total sentences but allow more context for Gemini (max 12 sentences)
+                const maxSentences = 12;
+                if (relevantSentences.length >= maxSentences) {
+                    return;
+                }
             }
+        });
+        
+        // Stop if we have enough relevant information
+        if (relevantSentences.length >= 12) {
+            break;
         }
-        
-        const chunkKey = chunkContent.substring(0, 150).toLowerCase();
-        
-        // Skip duplicate or very similar chunks
-        if (usedContent.has(chunkKey)) return;
-        usedContent.add(chunkKey);
-        
-        // Build detailed answer with proper formatting
-        if (combinedInfo.length < 2000) { // Increased limit for detailed answers
-            if (combinedInfo.length > 0) {
-                combinedInfo += " ";
-            }
-            
-            // Clean up chunk content and ensure proper sentence structure
-            let cleanChunk = chunkContent.trim();
-            
-            // Ensure proper sentence endings
-            if (!cleanChunk.match(/[.!?]$/)) {
-                cleanChunk += ".";
-            }
-            
-            combinedInfo += cleanChunk;
-            processedCount++;
-        }
-    });
+    }
     
     // If person query but no info found, return specific message
-    if (personName && combinedInfo.trim().length < 20) {
+    if (personName && relevantSentences.length === 0) {
         return `I couldn't find information about ${personName} in your uploaded documents.`;
     }
     
     // If no relevant content found after filtering, return message
-    if (combinedInfo.trim().length < 20) {
+    if (relevantSentences.length === 0) {
         return "I couldn't find relevant information in your uploaded documents that specifically addresses this question.";
     }
     
-    // Return detailed, specific answer from relevant documents only
-    return combinedInfo.trim();
+    // Try to use Gemini to generate a better answer
+    // Format context with clear separators and document sources for better structure
+    const contextByDoc = {};
+    relevantSentences.forEach(({ text, docTitle, filename }) => {
+        const docKey = docTitle;
+        if (!contextByDoc[docKey]) {
+            contextByDoc[docKey] = {
+                title: docTitle,
+                filename: filename,
+                sentences: []
+            };
+        }
+        contextByDoc[docKey].sentences.push(text);
+    });
+    
+    // Format context with document sources for better organization
+    const context = Object.values(contextByDoc)
+        .map(({ title, sentences: docSentences }) => {
+            return `[From: ${title}]\n${docSentences.join('\n')}`;
+        })
+        .join('\n\n---\n\n');
+    
+    const geminiAnswer = await generateAnswerWithGemini(query, context, true);
+    
+    if (geminiAnswer) {
+        console.log("✅ Used Gemini AI to generate answer from documents");
+        return geminiAnswer;
+    }
+    
+    // Fallback to rule-based answer generation
+    console.log("⚠️  Using rule-based answer generation (Gemini not available)");
+    
+    // Combine sentences into a focused answer (extract text from sentence objects)
+    const sentenceTexts = relevantSentences.map(s => typeof s === 'string' ? s : s.text);
+    let answer = sentenceTexts.join(' ');
+    
+    // Clean up the answer
+    answer = answer.trim();
+    
+    // Remove duplicate periods/spaces
+    answer = answer.replace(/\.{2,}/g, '.');
+    answer = answer.replace(/\s{2,}/g, ' ');
+    
+    // Ensure proper sentence endings
+    if (!answer.match(/[.!?]$/)) {
+        answer += '.';
+    }
+    
+    // Limit answer length to keep it focused but informative (max 800 characters)
+    if (answer.length > 800) {
+        // Try to cut at a sentence boundary
+        const answerSentences = answer.split(/([.!?]+)\s+/);
+        let truncated = '';
+        // Take up to 4-5 sentences for better context
+        const maxSentencesToKeep = 5;
+        for (let i = 0; i < answerSentences.length && truncated.length < 750 && i < maxSentencesToKeep * 2; i++) {
+            truncated += answerSentences[i];
+        }
+        answer = truncated.trim();
+        if (!answer.match(/[.!?]$/)) {
+            answer += '...';
+        }
+    }
+    
+    // Return focused, specific answer
+    return answer;
 }
 
 // Detect question type to provide better answers
@@ -1684,35 +2212,48 @@ function extractDirectAnswer(query, snippet, questionType) {
 }
 
 // Delete document
-app.delete("/api/documents/:id", authenticateToken, (req, res) => {
-    const docIndex = documents.findIndex((d) => d.id === req.params.id);
-    if (docIndex === -1) {
-        return res.status(404).json({ error: "Document not found" });
+app.delete("/api/documents/:id", authenticateToken, async (req, res) => {
+    try {
+        const doc = await Document.findOne({ id: req.params.id });
+        if (!doc) {
+            return res.status(404).json({ error: "Document not found" });
+        }
+        
+        // Delete file if it exists
+        if (doc.filePath && fs.existsSync(doc.filePath)) {
+            try {
+                fs.unlinkSync(doc.filePath);
+            } catch (err) {
+                console.warn(`⚠️  Could not delete file: ${err.message}`);
+            }
+        }
+        
+        // Delete from MongoDB
+        await Document.deleteOne({ id: req.params.id });
+        
+        // Update in-memory cache
+        const docIndex = documents.findIndex((d) => d.id === req.params.id);
+        if (docIndex !== -1) {
+            documents.splice(docIndex, 1);
+        }
+        
+        console.log(`🗑️  Deleted document from MongoDB: ${doc.title}`);
+        res.json({ message: "Document deleted successfully" });
+    } catch (error) {
+        console.error("Error deleting document:", error);
+        res.status(500).json({ error: "Failed to delete document" });
     }
-    
-    const doc = documents[docIndex];
-    
-    // Delete file
-    if (fs.existsSync(doc.filePath)) {
-        fs.unlinkSync(doc.filePath);
-    }
-    
-    // Remove from documents array
-    documents.splice(docIndex, 1);
-    saveDocuments();
-    
-    res.json({ message: "Document deleted successfully" });
 });
 
 // Messaging Routes
 
 // Get all users (for adding contacts)
-app.get("/api/users", authenticateToken, (req, res) => {
+app.get("/api/users", authenticateToken, async (req, res) => {
     try {
-        // Filter out any invalid users (shouldn't happen, but safety check)
-        const validUsers = users.filter(u => u && u.id && u.email);
+        // Get all users from MongoDB
+        const allUsers = await User.find({}).select('id email name role');
         
-        const userList = validUsers
+        const userList = allUsers
             .filter(u => u.id !== req.user.id) // Exclude current user
             .map(u => ({
                 id: u.id,
@@ -1741,24 +2282,22 @@ app.post("/api/contacts", authenticateToken, async (req, res) => {
             return res.status(400).json({ error: "Cannot add yourself as a contact" });
         }
 
-        const contactUser = users.find(u => u.id === userId);
+        const contactUser = await User.findOne({ id: userId });
         if (!contactUser) {
             return res.status(404).json({ error: "User not found" });
         }
 
-        // Initialize contacts for current user if needed
-        if (!contacts[currentUserId]) {
-            contacts[currentUserId] = [];
-        }
-
-        // Check if contact already exists
-        if (contacts[currentUserId].includes(userId)) {
+        // Check if contact already exists in MongoDB
+        const existingContact = await Contact.findOne({ userId: currentUserId, contactId: userId });
+        if (existingContact) {
             return res.status(400).json({ error: "Contact already added" });
         }
 
-        // Add contact
-        contacts[currentUserId].push(userId);
-        saveContacts();
+        // Add contact to MongoDB
+        await Contact.create({
+            userId: currentUserId,
+            contactId: userId
+        });
 
         console.log(`✅ ${req.user.email} added contact: ${contactUser.email}`);
 
@@ -1777,20 +2316,22 @@ app.post("/api/contacts", authenticateToken, async (req, res) => {
 });
 
 // Get contacts
-app.get("/api/contacts", authenticateToken, (req, res) => {
+app.get("/api/contacts", authenticateToken, async (req, res) => {
     try {
         const currentUserId = req.user.id;
-        const userContacts = contacts[currentUserId] || [];
-
-        const contactList = userContacts.map(userId => {
-            const user = users.find(u => u.id === userId);
-            if (!user) return null;
-            return {
-                id: user.id,
-                email: user.email,
-                name: user.name,
-            };
-        }).filter(Boolean);
+        
+        // Get contacts from MongoDB
+        const userContacts = await Contact.find({ userId: currentUserId });
+        const contactIds = userContacts.map(c => c.contactId);
+        
+        // Get user details for each contact
+        const contactUsers = await User.find({ id: { $in: contactIds } }).select('id email name');
+        
+        const contactList = contactUsers.map(user => ({
+            id: user.id,
+            email: user.email,
+            name: user.name,
+        }));
 
         res.json({ contacts: contactList });
     } catch (error) {
@@ -1813,22 +2354,21 @@ app.post("/api/messages", authenticateToken, async (req, res) => {
             return res.status(400).json({ error: "Cannot send message to yourself" });
         }
 
-        const recipient = users.find(u => u.id === recipientId);
+        const recipient = await User.findOne({ id: recipientId });
         if (!recipient) {
             return res.status(404).json({ error: "Recipient not found" });
         }
 
-        const message = {
+        // Save message to MongoDB
+        const message = new Message({
             id: Date.now().toString(),
             senderId,
             recipientId,
-            text: text.trim(),
-            timestamp: new Date().toISOString(),
-            read: false,
-        };
+            content: text.trim(),
+            timestamp: new Date()
+        });
 
-        messages.push(message);
-        saveMessages();
+        await message.save();
 
         console.log(`💬 Message sent from ${req.user.email} to ${recipient.email}`);
 
@@ -1843,34 +2383,21 @@ app.post("/api/messages", authenticateToken, async (req, res) => {
 });
 
 // Get conversations (list of people you've messaged or received messages from)
-app.get("/api/conversations", authenticateToken, (req, res) => {
+app.get("/api/conversations", authenticateToken, async (req, res) => {
     try {
         const currentUserId = req.user.id;
 
-        // Clean up messages from deleted users (orphaned messages)
-        const validUserIds = new Set(users.map(u => u.id));
-        const originalMessageCount = messages.length;
-        messages = messages.filter(msg => 
-            validUserIds.has(msg.senderId) && validUserIds.has(msg.recipientId)
-        );
-        if (messages.length < originalMessageCount) {
-            saveMessages();
-            console.log(`🧹 Cleaned up ${originalMessageCount - messages.length} orphaned message(s) from deleted users`);
-        }
+        // Get all messages involving current user from MongoDB
+        const allMessages = await Message.find({
+            $or: [
+                { senderId: currentUserId },
+                { recipientId: currentUserId }
+            ]
+        }).sort({ timestamp: -1 });
 
-        // Clean up contacts from deleted users
-        Object.keys(contacts).forEach(userId => {
-            if (!validUserIds.has(userId)) {
-                delete contacts[userId];
-            } else {
-                contacts[userId] = contacts[userId].filter(contactId => validUserIds.has(contactId));
-            }
-        });
-        saveContacts();
-
-        // Get all unique conversation partners
+        // Get unique conversation partners
         const conversationPartners = new Set();
-        messages.forEach(msg => {
+        allMessages.forEach(msg => {
             if (msg.senderId === currentUserId) {
                 conversationPartners.add(msg.recipientId);
             } else if (msg.recipientId === currentUserId) {
@@ -1879,12 +2406,12 @@ app.get("/api/conversations", authenticateToken, (req, res) => {
         });
 
         // Build conversation list with last message
-        const conversations = Array.from(conversationPartners).map(partnerId => {
-            const partner = users.find(u => u.id === partnerId);
+        const conversations = await Promise.all(Array.from(conversationPartners).map(async (partnerId) => {
+            const partner = await User.findOne({ id: partnerId }).select('id email name');
             if (!partner) return null;
 
             // Get last message in this conversation
-            const conversationMessages = messages
+            const conversationMessages = allMessages
                 .filter(msg => 
                     (msg.senderId === currentUserId && msg.recipientId === partnerId) ||
                     (msg.senderId === partnerId && msg.recipientId === currentUserId)
@@ -1892,10 +2419,9 @@ app.get("/api/conversations", authenticateToken, (req, res) => {
                 .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
             const lastMessage = conversationMessages[0] || null;
-            const unreadCount = messages.filter(msg => 
+            const unreadCount = allMessages.filter(msg => 
                 msg.recipientId === currentUserId && 
-                msg.senderId === partnerId && 
-                !msg.read
+                msg.senderId === partnerId
             ).length;
 
             return {
@@ -1903,20 +2429,22 @@ app.get("/api/conversations", authenticateToken, (req, res) => {
                 name: partner.name,
                 email: partner.email,
                 lastMessage: lastMessage ? {
-                    text: lastMessage.text,
+                    text: lastMessage.content,
                     timestamp: lastMessage.timestamp,
                     isFromMe: lastMessage.senderId === currentUserId,
                 } : null,
                 unreadCount,
             };
-        }).filter(Boolean).sort((a, b) => {
+        }));
+
+        const validConversations = conversations.filter(Boolean).sort((a, b) => {
             // Sort by last message timestamp
             if (!a.lastMessage) return 1;
             if (!b.lastMessage) return -1;
             return new Date(b.lastMessage.timestamp) - new Date(a.lastMessage.timestamp);
         });
 
-        res.json({ conversations });
+        res.json({ conversations: validConversations });
     } catch (error) {
         console.error("Get conversations error:", error);
         res.status(500).json({ error: "Failed to get conversations" });
@@ -1924,7 +2452,7 @@ app.get("/api/conversations", authenticateToken, (req, res) => {
 });
 
 // Get messages for a specific conversation
-app.get("/api/messages/:userId", authenticateToken, (req, res) => {
+app.get("/api/messages/:userId", authenticateToken, async (req, res) => {
     try {
         const currentUserId = req.user.id;
         const otherUserId = req.params.userId;
@@ -1933,28 +2461,27 @@ app.get("/api/messages/:userId", authenticateToken, (req, res) => {
             return res.status(400).json({ error: "Invalid user ID" });
         }
 
-        // Get all messages between current user and other user
-        const conversationMessages = messages
-            .filter(msg =>
-                (msg.senderId === currentUserId && msg.recipientId === otherUserId) ||
-                (msg.senderId === otherUserId && msg.recipientId === currentUserId)
-            )
-            .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
-            .map(msg => ({
-                id: msg.id,
-                text: msg.text,
-                timestamp: msg.timestamp,
-                isFromMe: msg.senderId === currentUserId,
-                senderName: users.find(u => u.id === msg.senderId)?.name || "Unknown",
-            }));
+        // Get all messages between current user and other user from MongoDB
+        const conversationMessages = await Message.find({
+            $or: [
+                { senderId: currentUserId, recipientId: otherUserId },
+                { senderId: otherUserId, recipientId: currentUserId }
+            ]
+        }).sort({ timestamp: 1 });
 
-        // Mark messages as read
-        messages.forEach(msg => {
-            if (msg.recipientId === currentUserId && msg.senderId === otherUserId && !msg.read) {
-                msg.read = true;
-            }
-        });
-        saveMessages();
+        // Get sender names
+        const senderIds = [...new Set(conversationMessages.map(m => m.senderId))];
+        const senders = await User.find({ id: { $in: senderIds } }).select('id name');
+        const senderMap = {};
+        senders.forEach(s => senderMap[s.id] = s.name);
+
+        const formattedMessages = conversationMessages.map(msg => ({
+            id: msg.id,
+            text: msg.content,
+            timestamp: msg.timestamp,
+            isFromMe: msg.senderId === currentUserId,
+            senderName: senderMap[msg.senderId] || "Unknown",
+        }));
 
         res.json({ messages: conversationMessages });
     } catch (error) {
@@ -1963,4 +2490,32 @@ app.get("/api/messages/:userId", authenticateToken, (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+// Health check endpoint
+app.get("/", (req, res) => {
+    res.json({ 
+        status: "ok", 
+        message: "KTPilot Server is running",
+        database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+        port: PORT
+    });
+});
+
+// Health check API endpoint
+app.get("/api/health", (req, res) => {
+    res.json({ 
+        status: "ok", 
+        server: "running",
+        database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+    if (mongoose.connection.readyState === 1) {
+        console.log(`✅ MongoDB: Connected`);
+    } else {
+        console.log(`⚠️  MongoDB: Connecting...`);
+    }
+});
