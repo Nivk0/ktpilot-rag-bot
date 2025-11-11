@@ -22,6 +22,8 @@ server/documents/
 server/documents.json
 server/users.json
 server/resetCodes.json
+server/messages.json
+server/contacts.json
 uploads/
 .DS_Store
 Thumbs.db

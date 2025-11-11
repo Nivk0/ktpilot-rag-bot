@@ -42,8 +42,9 @@ export default function Signup({ onSwitchToLogin }) {
       <div className="ktp-auth-card">
         <div className="ktp-auth-header">
           <div className="ktp-logo-pill">
-            <div className="ktp-logo-dot" />
-            <span>KTPilot</span>
+            <div className="ktp-logo-greek">ΚΘΠ</div>
+            <div className="ktp-logo-name">KAPPA THETA PI</div>
+            <div className="ktp-logo-chapter">MU CHAPTER</div>
           </div>
           <h2>Create Account</h2>
           <p>Sign up to get started with KTPilot</p>

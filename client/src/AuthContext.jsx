@@ -71,12 +71,15 @@ export function AuthProvider({ children }) {
       return { success: true };
     } catch (error) {
       console.error("Login error:", error);
-      const errorMessage = error.response?.data?.error || 
+      const errorData = error.response?.data || {};
+      const errorMessage = errorData.error || 
+                          errorData.message ||
                           error.message || 
                           (error.code === "ERR_NETWORK" ? "Network error. Is the backend running?" : "Login failed");
       return {
         success: false,
         error: errorMessage,
+        code: errorData.code, // Pass through the error code for specific error handling
       };
     }
   };

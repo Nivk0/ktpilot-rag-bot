@@ -5,6 +5,7 @@ import Login from "./Login";
 import Signup from "./Signup";
 import ForgotPassword from "./ForgotPassword";
 import ExecutivePanel from "./ExecutivePanel";
+import Messaging from "./Messaging";
 
 // Use environment variable for production, or relative path for same-origin
 // In development, empty string uses Vite proxy
@@ -33,6 +34,8 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [showDocuments, setShowDocuments] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState(null);
+  const [showMessaging, setShowMessaging] = useState(false);
+  const [chatMode, setChatMode] = useState("ai"); // "ai" or "dm"
 
   const topics = [
     "About KTPilot & fraternity",
@@ -160,7 +163,17 @@ export default function App() {
   };
 
   const handleQuickTopic = (t) => {
+    // Switch back to chat view if in messaging or documents view
+    setShowMessaging(false);
+    setShowDocuments(false);
     setQuery(t);
+    // Focus the chat input after a brief delay to ensure it's rendered
+    setTimeout(() => {
+      const chatInput = document.getElementById("ktp-chat-input");
+      if (chatInput) {
+        chatInput.focus();
+      }
+    }, 100);
   };
 
   // Show loading state while checking for existing token
@@ -199,13 +212,11 @@ export default function App() {
   return (
     <div className="ktp-root">
       <aside className="ktp-left">
-        <div className="ktp-logo-pill">
-          <div className="ktp-logo-dot" />
-          <span>KTPilot</span>
-        </div>
         <div className="ktp-bot-card">
-          <div className="ktp-bot-avatar">
-            <div className="ktp-bot-face" />
+          <div className="ktp-logo-pill">
+            <div className="ktp-logo-greek">ΚΘΠ</div>
+            <div className="ktp-logo-name">KAPPA THETA PI</div>
+            <div className="ktp-logo-chapter">MU CHAPTER</div>
           </div>
           <h1>Meet KTPilot!</h1>
           <p>Your AI assistant for KTP, events, docs, and FAQs.</p>
@@ -261,6 +272,12 @@ export default function App() {
             onClick={() => setShowDocuments(!showDocuments)}
           >
             📚 {showDocuments ? "Hide" : "View"} Documents ({documents.length})
+          </button>
+          <button
+            className="ktp-action-card"
+            onClick={() => setShowMessaging(true)}
+          >
+            💌 Messages
           </button>
         </div>
 
@@ -376,38 +393,68 @@ export default function App() {
       </section>
 
       <section className="ktp-right">
-        <header className="ktp-chat-header">
-          <div className="ktp-chat-avatar" />
-          <div>
-            <div className="ktp-chat-title">KTPilot</div>
-            <div className="ktp-chat-subtitle">Ask anything</div>
-          </div>
-        </header>
-
-        <div className="ktp-chat-history">
-          {messages.map((m, i) => (
-            <div
-              key={i}
-              className={"ktp-msg " + (m.role === "user" ? "ktp-msg-user" : "ktp-msg-bot")}
-            >
-              {m.text}
-            </div>
-          ))}
-          {isThinking && (
-            <div className="ktp-msg ktp-msg-bot ktp-typing">KTPilot is thinking...</div>
-          )}
-        </div>
-
-        <form className="ktp-chat-input-row" onSubmit={handleAsk}>
-          <input
-            id="ktp-chat-input"
-            type="text"
-            placeholder="Hello KTPilot, how are you today?"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+        {showMessaging ? (
+          <Messaging
+            getAuthHeaders={getAuthHeaders}
+            user={user}
+            onBack={() => setShowMessaging(false)}
           />
-          <button type="submit">Send</button>
-        </form>
+        ) : (
+          <>
+            <header className="ktp-chat-header">
+              <div className="ktp-chat-avatar">
+                <div className="ktp-bot-face-header" />
+              </div>
+              <div>
+                <div className="ktp-chat-title">KTPilot</div>
+                <div className="ktp-chat-subtitle">Ask anything</div>
+              </div>
+            </header>
+
+            <div className="ktp-chat-history">
+              {messages.map((m, i) => (
+                <div
+                  key={i}
+                  className={"ktp-msg-wrapper " + (m.role === "user" ? "ktp-msg-wrapper-user" : "ktp-msg-wrapper-bot")}
+                >
+                  {m.role === "bot" && (
+                    <div className="ktp-msg-avatar">
+                      <div className="ktp-bot-face-small" />
+                    </div>
+                  )}
+                  <div className={"ktp-msg " + (m.role === "user" ? "ktp-msg-user" : "ktp-msg-bot")}>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              {isThinking && (
+                <div className="ktp-msg-wrapper ktp-msg-wrapper-bot">
+                  <div className="ktp-msg-avatar">
+                    <div className="ktp-bot-face-small" />
+                  </div>
+                  <div className="ktp-msg ktp-msg-bot ktp-typing">
+                    <div className="ktp-typing-dots">
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <form className="ktp-chat-input-row" onSubmit={handleAsk}>
+              <input
+                id="ktp-chat-input"
+                type="text"
+                placeholder="Hello KTPilot, how are you today?"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              <button type="submit">Send</button>
+            </form>
+          </>
+        )}
       </section>
     </div>
   );

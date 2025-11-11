@@ -1,5 +1,11 @@
 # Quick Deployment Guide
 
+## ⚠️ Important: Shared Users
+
+**To make users visible to everyone across different computers, you MUST deploy the backend to a shared server (Railway, Render, etc.).**
+
+If you run the backend locally, each computer will have its own separate user database. See `SHARED_USERS_GUIDE.md` for details.
+
 ## 🚀 Quick Deploy Options
 
 ### Option 1: Local Testing (Immediate)

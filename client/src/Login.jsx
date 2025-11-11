@@ -20,7 +20,12 @@ export default function Login({ onSwitchToSignup, onForgotPassword }) {
     setLoading(false);
 
     if (!result.success) {
-      setError(result.error);
+      // Check if it's a "user not found" error
+      if (result.error === "Account not found" || result.code === "USER_NOT_FOUND") {
+        setError("You don't have an account. Please create an account to continue.");
+      } else {
+        setError(result.error);
+      }
     }
   };
 
@@ -29,15 +34,36 @@ export default function Login({ onSwitchToSignup, onForgotPassword }) {
       <div className="ktp-auth-card">
         <div className="ktp-auth-header">
           <div className="ktp-logo-pill">
-            <div className="ktp-logo-dot" />
-            <span>KTPilot</span>
+            <div className="ktp-logo-greek">ΚΘΠ</div>
+            <div className="ktp-logo-name">KAPPA THETA PI</div>
+            <div className="ktp-logo-chapter">MU CHAPTER</div>
           </div>
           <h2>Welcome Back</h2>
           <p>Sign in to access your documents</p>
         </div>
 
         <form onSubmit={handleSubmit} className="ktp-auth-form">
-          {error && <div className="ktp-auth-error">{error}</div>}
+          {error && (
+            <div className="ktp-auth-error">
+              {error}
+              {error.includes("don't have an account") && (
+                <div style={{ marginTop: "12px" }}>
+                  <button 
+                    type="button" 
+                    onClick={onSwitchToSignup} 
+                    className="ktp-auth-link"
+                    style={{ 
+                      fontWeight: "bold", 
+                      textDecoration: "underline",
+                      fontSize: "14px"
+                    }}
+                  >
+                    Create an account here
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="ktp-auth-field">
             <label>Email</label>

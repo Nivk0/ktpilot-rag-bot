@@ -36,6 +36,8 @@ if (!fs.existsSync(documentsDir)) fs.mkdirSync(documentsDir);
 const documentsFile = path.join(__dirname, "documents.json");
 const usersFile = path.join(__dirname, "users.json");
 const resetCodesFile = path.join(__dirname, "resetCodes.json");
+const messagesFile = path.join(__dirname, "messages.json");
+const contactsFile = path.join(__dirname, "contacts.json");
 
 // RAG Model: Chunk documents for better retrieval (defined early for use in document loading)
 function chunkDocument(content, docId, title) {
@@ -185,6 +187,28 @@ if (fs.existsSync(resetCodesFile)) {
   }
 }
 
+// Load messages from file
+let messages = [];
+if (fs.existsSync(messagesFile)) {
+  try {
+    messages = JSON.parse(fs.readFileSync(messagesFile, "utf8"));
+    console.log(`💬 Loaded ${messages.length} message(s) from storage`);
+  } catch (e) {
+    console.log("No existing messages found, starting fresh.");
+  }
+}
+
+// Load contacts from file
+let contacts = {};
+if (fs.existsSync(contactsFile)) {
+  try {
+    contacts = JSON.parse(fs.readFileSync(contactsFile, "utf8"));
+    console.log(`👥 Loaded contacts for ${Object.keys(contacts).length} user(s)`);
+  } catch (e) {
+    console.log("No existing contacts found, starting fresh.");
+  }
+}
+
 // Save documents to file
 function saveDocuments() {
   fs.writeFileSync(documentsFile, JSON.stringify(documents, null, 2));
@@ -198,6 +222,16 @@ function saveUsers() {
 // Save reset codes to file
 function saveResetCodes() {
   fs.writeFileSync(resetCodesFile, JSON.stringify(resetCodes, null, 2));
+}
+
+// Save messages to file
+function saveMessages() {
+  fs.writeFileSync(messagesFile, JSON.stringify(messages, null, 2));
+}
+
+// Save contacts to file
+function saveContacts() {
+  fs.writeFileSync(contactsFile, JSON.stringify(contacts, null, 2));
 }
 
 // Generate a random reset code
@@ -516,13 +550,17 @@ app.post("/api/auth/login", async (req, res) => {
         // Find user
         const user = users.find((u) => u.email === email);
         if (!user) {
-            return res.status(401).json({ error: "Invalid email or password" });
+            return res.status(404).json({ 
+                error: "Account not found",
+                message: "You don't have an account. Please create an account to continue.",
+                code: "USER_NOT_FOUND"
+            });
         }
 
         // Check password
         const validPassword = await bcrypt.compare(password, user.password);
         if (!validPassword) {
-            return res.status(401).json({ error: "Invalid email or password" });
+            return res.status(401).json({ error: "Invalid password" });
         }
 
         // Generate JWT token
@@ -1664,6 +1702,265 @@ app.delete("/api/documents/:id", authenticateToken, (req, res) => {
     saveDocuments();
     
     res.json({ message: "Document deleted successfully" });
+});
+
+// Messaging Routes
+
+// Get all users (for adding contacts)
+app.get("/api/users", authenticateToken, (req, res) => {
+    try {
+        // Filter out any invalid users (shouldn't happen, but safety check)
+        const validUsers = users.filter(u => u && u.id && u.email);
+        
+        const userList = validUsers
+            .filter(u => u.id !== req.user.id) // Exclude current user
+            .map(u => ({
+                id: u.id,
+                email: u.email,
+                name: u.name,
+                role: u.role || "user",
+            }));
+        res.json({ users: userList });
+    } catch (error) {
+        console.error("Get users error:", error);
+        res.status(500).json({ error: "Failed to get users" });
+    }
+});
+
+// Add contact
+app.post("/api/contacts", authenticateToken, async (req, res) => {
+    try {
+        const { userId } = req.body;
+        const currentUserId = req.user.id;
+
+        if (!userId) {
+            return res.status(400).json({ error: "User ID is required" });
+        }
+
+        if (userId === currentUserId) {
+            return res.status(400).json({ error: "Cannot add yourself as a contact" });
+        }
+
+        const contactUser = users.find(u => u.id === userId);
+        if (!contactUser) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        // Initialize contacts for current user if needed
+        if (!contacts[currentUserId]) {
+            contacts[currentUserId] = [];
+        }
+
+        // Check if contact already exists
+        if (contacts[currentUserId].includes(userId)) {
+            return res.status(400).json({ error: "Contact already added" });
+        }
+
+        // Add contact
+        contacts[currentUserId].push(userId);
+        saveContacts();
+
+        console.log(`✅ ${req.user.email} added contact: ${contactUser.email}`);
+
+        res.json({
+            message: "Contact added successfully",
+            contact: {
+                id: contactUser.id,
+                email: contactUser.email,
+                name: contactUser.name,
+            },
+        });
+    } catch (error) {
+        console.error("Add contact error:", error);
+        res.status(500).json({ error: "Failed to add contact" });
+    }
+});
+
+// Get contacts
+app.get("/api/contacts", authenticateToken, (req, res) => {
+    try {
+        const currentUserId = req.user.id;
+        const userContacts = contacts[currentUserId] || [];
+
+        const contactList = userContacts.map(userId => {
+            const user = users.find(u => u.id === userId);
+            if (!user) return null;
+            return {
+                id: user.id,
+                email: user.email,
+                name: user.name,
+            };
+        }).filter(Boolean);
+
+        res.json({ contacts: contactList });
+    } catch (error) {
+        console.error("Get contacts error:", error);
+        res.status(500).json({ error: "Failed to get contacts" });
+    }
+});
+
+// Send message
+app.post("/api/messages", authenticateToken, async (req, res) => {
+    try {
+        const { recipientId, text } = req.body;
+        const senderId = req.user.id;
+
+        if (!recipientId || !text) {
+            return res.status(400).json({ error: "Recipient ID and message text are required" });
+        }
+
+        if (recipientId === senderId) {
+            return res.status(400).json({ error: "Cannot send message to yourself" });
+        }
+
+        const recipient = users.find(u => u.id === recipientId);
+        if (!recipient) {
+            return res.status(404).json({ error: "Recipient not found" });
+        }
+
+        const message = {
+            id: Date.now().toString(),
+            senderId,
+            recipientId,
+            text: text.trim(),
+            timestamp: new Date().toISOString(),
+            read: false,
+        };
+
+        messages.push(message);
+        saveMessages();
+
+        console.log(`💬 Message sent from ${req.user.email} to ${recipient.email}`);
+
+        res.json({
+            message: "Message sent successfully",
+            messageData: message,
+        });
+    } catch (error) {
+        console.error("Send message error:", error);
+        res.status(500).json({ error: "Failed to send message" });
+    }
+});
+
+// Get conversations (list of people you've messaged or received messages from)
+app.get("/api/conversations", authenticateToken, (req, res) => {
+    try {
+        const currentUserId = req.user.id;
+
+        // Clean up messages from deleted users (orphaned messages)
+        const validUserIds = new Set(users.map(u => u.id));
+        const originalMessageCount = messages.length;
+        messages = messages.filter(msg => 
+            validUserIds.has(msg.senderId) && validUserIds.has(msg.recipientId)
+        );
+        if (messages.length < originalMessageCount) {
+            saveMessages();
+            console.log(`🧹 Cleaned up ${originalMessageCount - messages.length} orphaned message(s) from deleted users`);
+        }
+
+        // Clean up contacts from deleted users
+        Object.keys(contacts).forEach(userId => {
+            if (!validUserIds.has(userId)) {
+                delete contacts[userId];
+            } else {
+                contacts[userId] = contacts[userId].filter(contactId => validUserIds.has(contactId));
+            }
+        });
+        saveContacts();
+
+        // Get all unique conversation partners
+        const conversationPartners = new Set();
+        messages.forEach(msg => {
+            if (msg.senderId === currentUserId) {
+                conversationPartners.add(msg.recipientId);
+            } else if (msg.recipientId === currentUserId) {
+                conversationPartners.add(msg.senderId);
+            }
+        });
+
+        // Build conversation list with last message
+        const conversations = Array.from(conversationPartners).map(partnerId => {
+            const partner = users.find(u => u.id === partnerId);
+            if (!partner) return null;
+
+            // Get last message in this conversation
+            const conversationMessages = messages
+                .filter(msg => 
+                    (msg.senderId === currentUserId && msg.recipientId === partnerId) ||
+                    (msg.senderId === partnerId && msg.recipientId === currentUserId)
+                )
+                .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            const lastMessage = conversationMessages[0] || null;
+            const unreadCount = messages.filter(msg => 
+                msg.recipientId === currentUserId && 
+                msg.senderId === partnerId && 
+                !msg.read
+            ).length;
+
+            return {
+                userId: partner.id,
+                name: partner.name,
+                email: partner.email,
+                lastMessage: lastMessage ? {
+                    text: lastMessage.text,
+                    timestamp: lastMessage.timestamp,
+                    isFromMe: lastMessage.senderId === currentUserId,
+                } : null,
+                unreadCount,
+            };
+        }).filter(Boolean).sort((a, b) => {
+            // Sort by last message timestamp
+            if (!a.lastMessage) return 1;
+            if (!b.lastMessage) return -1;
+            return new Date(b.lastMessage.timestamp) - new Date(a.lastMessage.timestamp);
+        });
+
+        res.json({ conversations });
+    } catch (error) {
+        console.error("Get conversations error:", error);
+        res.status(500).json({ error: "Failed to get conversations" });
+    }
+});
+
+// Get messages for a specific conversation
+app.get("/api/messages/:userId", authenticateToken, (req, res) => {
+    try {
+        const currentUserId = req.user.id;
+        const otherUserId = req.params.userId;
+
+        if (otherUserId === currentUserId) {
+            return res.status(400).json({ error: "Invalid user ID" });
+        }
+
+        // Get all messages between current user and other user
+        const conversationMessages = messages
+            .filter(msg =>
+                (msg.senderId === currentUserId && msg.recipientId === otherUserId) ||
+                (msg.senderId === otherUserId && msg.recipientId === currentUserId)
+            )
+            .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+            .map(msg => ({
+                id: msg.id,
+                text: msg.text,
+                timestamp: msg.timestamp,
+                isFromMe: msg.senderId === currentUserId,
+                senderName: users.find(u => u.id === msg.senderId)?.name || "Unknown",
+            }));
+
+        // Mark messages as read
+        messages.forEach(msg => {
+            if (msg.recipientId === currentUserId && msg.senderId === otherUserId && !msg.read) {
+                msg.read = true;
+            }
+        });
+        saveMessages();
+
+        res.json({ messages: conversationMessages });
+    } catch (error) {
+        console.error("Get messages error:", error);
+        res.status(500).json({ error: "Failed to get messages" });
+    }
 });
 
 app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
