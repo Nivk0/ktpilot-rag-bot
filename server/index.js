@@ -68,8 +68,31 @@ const app = express();
 const PORT = process.env.PORT || 5050;
 
 // CORS configuration for production
+// Support multiple origins (local development, Netlify, custom domains)
+const allowedOrigins = [
+    "http://localhost:5173", // Local development
+    process.env.FRONTEND_URL,
+    process.env.CORS_ORIGIN,
+].filter(Boolean); // Remove undefined values
+
 const corsOptions = {
-    origin: process.env.FRONTEND_URL || process.env.CORS_ORIGIN || "http://localhost:5173",
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        
+        // Check if origin is in allowed list
+        if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            // For production, you might want to be more strict
+            // For now, allow all origins if FRONTEND_URL is not set (development)
+            if (!process.env.FRONTEND_URL && !process.env.CORS_ORIGIN) {
+                callback(null, true);
+            } else {
+                callback(new Error('Not allowed by CORS'));
+            }
+        }
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],

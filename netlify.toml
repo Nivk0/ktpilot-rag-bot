@@ -1,0 +1,36 @@
+# Netlify Configuration for KTPilot Frontend
+[build]
+  # Build command for Vite
+  command = "cd client && npm install && npm run build"
+  # Publish directory (Vite's default build output)
+  publish = "client/dist"
+
+[build.environment]
+  # Node version
+  NODE_VERSION = "18"
+
+# SPA fallback - redirect all non-file requests to index.html
+# This ensures client-side routing works correctly
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Headers for security and CORS
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-XSS-Protection = "1; mode=block"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Note: Set VITE_API_BASE_URL in Netlify Dashboard → Site Settings → Environment Variables
+# Example: VITE_API_BASE_URL=https://your-backend.railway.app
+# This will be used for all deployment contexts (production, preview, branch)
+

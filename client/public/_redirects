@@ -1,0 +1,7 @@
+# Netlify Redirects for SPA
+# This ensures all routes work with client-side routing
+# The frontend uses VITE_API_BASE_URL to connect to the backend
+# No API proxy needed - API calls go directly to the backend URL
+
+# SPA fallback - redirect all non-file requests to index.html
+/*    /index.html   200
