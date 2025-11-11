@@ -25,10 +25,10 @@ This guide explains how to deploy the KTPilot backend to Railway, which is recom
 3. Go to "Settings" tab
 4. Set the following:
    - **Root Directory**: `server` ⚠️ **CRITICAL - This must be set!**
-   - **Build Command**: Leave EMPTY (Railway will auto-detect and run `npm install`)
-   - **Start Command**: Leave EMPTY (Railway will auto-detect and use `npm start` from package.json)
+   - **Build Command**: Leave EMPTY (RAILPACK will auto-detect and run `npm install`)
+   - **Start Command**: Leave EMPTY (RAILPACK will auto-detect and use `npm start` from package.json)
 
-**Note**: Railway automatically detects Node.js projects from `package.json`. No Dockerfile or custom configs needed!
+**Note**: The `server/railway.json` file configures Railway to use RAILPACK builder, which automatically detects Node.js projects from `package.json`. RAILPACK is Railway's build system (not Docker) - it's lightweight and auto-detects your project type.
 
 ## Step 3: Set Environment Variables
 

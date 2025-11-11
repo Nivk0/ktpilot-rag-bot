@@ -10,7 +10,8 @@ Your application is now configured for deployment to:
 ## 📋 Deployment Files Created
 
 ✅ **netlify.toml** - Netlify configuration for frontend
-✅ **server/package.json** - Railway auto-detects Node.js from this
+✅ **server/railway.json** - RAILPACK configuration for Railway
+✅ **server/package.json** - Has `start` script for Railway
 ✅ **server/Procfile** - Process file for backend (optional, Railway uses package.json)
 ✅ **client/public/_redirects** - Netlify SPA redirects
 ✅ **NETLIFY_DEPLOYMENT.md** - Detailed Netlify setup guide

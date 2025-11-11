@@ -3,31 +3,40 @@
 ## Problem
 "Error creating build plan with Railpack/Nixpacks" during Railway deployment.
 
-## Solution: Let Railway Auto-Detect (Recommended)
+## Solution: Use RAILPACK Builder
 
-Railway automatically detects Node.js projects from `package.json`. No Dockerfile or custom configs needed.
+Railway uses RAILPACK to automatically detect Node.js projects from `package.json`. The `railway.json` file helps Railway properly detect your project structure.
 
-### Step 1: Configure Railway Settings
+### Step 1: railway.json Configuration
+
+The `server/railway.json` file is already configured with:
+- **RAILPACK builder** - Auto-detects Node.js projects
+- **Runtime V2** - Latest Railway runtime
+- **Restart policy** - Automatically restarts on failure
+
+### Step 2: Configure Railway Settings
 
 1. **Go to Railway Dashboard** → Your Service → Settings
 2. **Set Root Directory** to: `server` ⚠️ **CRITICAL - This is the most important step!**
-3. **Leave Build Command EMPTY** (Railway will auto-detect and run `npm install`)
-4. **Leave Start Command EMPTY** (Railway will auto-detect and use `npm start` from package.json)
+3. **Leave Build Command EMPTY** (RAILPACK will auto-detect and run `npm install`)
+4. **Leave Start Command EMPTY** (RAILPACK will auto-detect and use `npm start` from package.json)
 
-### Step 2: Verify package.json
+### Step 3: Verify package.json
 
 Your `package.json` already has:
 - ✅ `"start": "node index.js"` script
 - ✅ All dependencies listed
 - ✅ Node.js compatible
 
-### Step 3: Railway Auto-Detection
+### Step 4: RAILPACK Auto-Detection
 
-Railway will automatically:
-1. Detect Node.js project from `package.json`
+RAILPACK (Railway's build system) will automatically:
+1. Detect Node.js project from `package.json` in the `server` directory
 2. Run `npm install` to install dependencies
 3. Run `npm start` which executes `node index.js`
 4. Set `PORT` environment variable automatically
+
+**Note**: RAILPACK is Railway's build system (not Docker). It automatically detects your project type and builds it accordingly.
 
 ### Manual Build Commands (Only if auto-detect fails)
 
@@ -56,11 +65,11 @@ Railway must be configured to use `/server` as the root.
 
 ## Current Configuration
 
+- ✅ `server/railway.json` - RAILPACK configuration (helps Railway detect Node.js)
 - ✅ `server/package.json` - Has `start` script (`node index.js`)
 - ✅ `server/Procfile` - Backup process file (optional, Railway uses package.json)
 - ✅ `server/index.js` - Uses `process.env.PORT` (Railway sets this automatically)
-- ✅ No Dockerfile - Railway auto-detects Node.js from package.json
-- ✅ No custom configs - Let Railway handle everything automatically
+- ✅ RAILPACK builder - Railway's build system (auto-detects Node.js, not Docker)
 
 ## Next Steps
 
