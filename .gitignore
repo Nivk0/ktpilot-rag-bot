@@ -18,6 +18,10 @@ out/
 client/.vite/
 client/dist/
 server/uploads/
+server/documents/
+server/documents.json
+server/users.json
+server/resetCodes.json
 uploads/
 .DS_Store
 Thumbs.db

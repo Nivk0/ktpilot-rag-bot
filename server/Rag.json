@@ -1,0 +1,40 @@
+{
+    "name": "Document",
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Document title"
+      },
+      "description": {
+        "type": "string",
+        "description": "Document description"
+      },
+      "category": {
+        "type": "string",
+        "enum": [
+          "bylaws",
+          "policies",
+          "events",
+          "membership",
+          "finances",
+          "history",
+          "other"
+        ],
+        "description": "Document category"
+      },
+      "file_url": {
+        "type": "string",
+        "description": "URL to the uploaded document"
+      },
+      "file_name": {
+        "type": "string",
+        "description": "Original file name"
+      }
+    },
+    "required": [
+      "title",
+      "file_url",
+      "file_name"
+    ]
+  }
