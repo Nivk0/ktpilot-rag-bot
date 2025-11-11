@@ -10,11 +10,12 @@ Your application is now configured for deployment to:
 ## 📋 Deployment Files Created
 
 ✅ **netlify.toml** - Netlify configuration for frontend
-✅ **server/railway.json** - Railway configuration for backend
-✅ **server/Procfile** - Process file for backend (Railway/Heroku)
+✅ **server/package.json** - Railway auto-detects Node.js from this
+✅ **server/Procfile** - Process file for backend (optional, Railway uses package.json)
 ✅ **client/public/_redirects** - Netlify SPA redirects
 ✅ **NETLIFY_DEPLOYMENT.md** - Detailed Netlify setup guide
 ✅ **RAILWAY_DEPLOYMENT.md** - Detailed Railway setup guide
+✅ **RAILWAY_FIX.md** - Railway build error troubleshooting
 ✅ **DEPLOYMENT_QUICKSTART.md** - Quick deployment steps
 
 ## 🎯 Quick Deployment (10 minutes)
@@ -22,9 +23,12 @@ Your application is now configured for deployment to:
 ### Step 1: Deploy Backend to Railway
 1. Go to [railway.app](https://railway.app)
 2. New Project → Deploy from GitHub
-3. Set Root Directory: `server`
-4. Add environment variables (see RAILWAY_DEPLOYMENT.md)
-5. Deploy and copy your Railway URL
+3. Set Root Directory: `server` ⚠️ **CRITICAL**
+4. Leave Build/Start commands EMPTY (Railway auto-detects)
+5. Add environment variables (see RAILWAY_DEPLOYMENT.md)
+6. Deploy and copy your Railway URL
+
+**Note**: Railway automatically detects Node.js from `package.json`. No Dockerfile needed!
 
 ### Step 2: Deploy Frontend to Netlify
 1. Go to [netlify.com](https://www.netlify.com)

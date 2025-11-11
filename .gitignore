@@ -34,3 +34,6 @@ Thumbs.db
 *.log
 __MACOSX/
 push.sh
+
+# Railway
+.railway/
