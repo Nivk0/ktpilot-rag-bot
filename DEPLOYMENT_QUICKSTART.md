@@ -45,11 +45,19 @@ Deploy KTPilot with:
 6. Click "Deploy site"
 7. Copy your Netlify URL (e.g., `https://your-app.netlify.app`)
 
-### 3. Update Backend CORS
+### 3. Connect Frontend to Backend
 
-1. Go back to Railway → Variables
-2. Update `FRONTEND_URL` to your Netlify URL
+**In Netlify:**
+1. Go to Netlify Dashboard → Site Settings → Environment Variables
+2. Add: `VITE_API_BASE_URL` = `https://your-app.railway.app` (your Railway URL)
+3. Redeploy your Netlify site (trigger a new deployment)
+
+**In Railway:**
+1. Go to Railway Dashboard → Variables
+2. Add: `FRONTEND_URL` = `https://your-app.netlify.app` (your Netlify URL)
 3. Railway will automatically redeploy
+
+**See `CONNECT_NETLIFY_RAILWAY.md` for detailed step-by-step instructions.**
 
 ### 4. Test
 

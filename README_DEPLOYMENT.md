@@ -69,6 +69,9 @@ VITE_API_BASE_URL=https://your-app.railway.app
 
 - **NETLIFY_DEPLOYMENT.md** - Complete Netlify setup
 - **RAILWAY_DEPLOYMENT.md** - Complete Railway setup
+- **CONNECT_NETLIFY_RAILWAY.md** - **Step-by-step guide to connect Netlify frontend to Railway backend**
+- **ENVIRONMENT_VARIABLES_CHECKLIST.md** - **Complete list of all environment variables needed**
+- **FIX_RAILWAY_INTERNAL_ERROR.md** - **Fix for `.railway.internal` errors**
 - **DEPLOYMENT_QUICKSTART.md** - Quick reference
 
 ## 🛠️ Troubleshooting

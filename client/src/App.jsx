@@ -77,14 +77,8 @@ export default function App() {
         headers: getAuthHeaders(),
       });
       const answer = res.data.answer || "I couldn't generate an answer.";
-      const sources = res.data.sources || [];
       
-      let answerWithSources = answer;
-      if (sources.length > 0) {
-        answerWithSources += "\n\n📚 Sources:\n" + sources.map((s, i) => `${i + 1}. ${s.title}`).join("\n");
-      }
-      
-      setMessages((prev) => [...prev, { role: "bot", text: answerWithSources }]);
+      setMessages((prev) => [...prev, { role: "bot", text: answer }]);
     } catch {
       setMessages((prev) => [
         ...prev,

@@ -27,21 +27,140 @@ const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-in-producti
 // MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/ktpilot";
 
-mongoose.connect(MONGODB_URI)
-.then(() => {
-    console.log("✅ Connected to MongoDB Atlas");
-    const dbName = MONGODB_URI.includes('@') 
-        ? MONGODB_URI.split('@')[1].split('/')[1].split('?')[0] 
-        : MONGODB_URI.split('/').pop().split('?')[0];
-    console.log(`   Database: ${dbName || 'ktpilot'}`);
-    console.log("   All data will be shared across all computers connected to this database");
-})
-.catch((error) => {
-    console.error("❌ MongoDB connection error:", error.message);
-    console.log("⚠️  Server will continue but database operations may fail");
-    console.log("   Please check your MONGODB_URI in .env file");
-    console.log("   Make sure your IP is whitelisted in MongoDB Atlas");
+// Connection state tracking
+let isMongoConnected = false;
+let isConnecting = false;
+let connectionRetries = 0;
+const MAX_RETRIES = 5;
+
+// Function to connect to MongoDB with retry logic
+async function connectToMongoDB() {
+    if (isConnecting || mongoose.connection.readyState === 1) {
+        return; // Already connecting or connected
+    }
+
+    isConnecting = true;
+    console.log("🔄 Connecting to MongoDB Atlas...");
+    
+    try {
+        await mongoose.connect(MONGODB_URI, {
+            serverSelectionTimeoutMS: 30000, // 30 seconds
+            socketTimeoutMS: 45000, // 45 seconds
+            connectTimeoutMS: 30000, // 30 seconds
+            retryWrites: true,
+            w: 'majority',
+            maxPoolSize: 10,
+            minPoolSize: 1
+        });
+        
+        isMongoConnected = true;
+        isConnecting = false;
+        connectionRetries = 0;
+        console.log("✅ Connected to MongoDB Atlas");
+        const dbName = MONGODB_URI.includes('@') 
+            ? MONGODB_URI.split('@')[1].split('/')[1].split('?')[0] 
+            : MONGODB_URI.split('/').pop().split('?')[0];
+        console.log(`   Database: ${dbName || 'ktpilot'}`);
+        console.log("   All data will be shared across all computers connected to this database");
+        
+        // Load documents after connection is established
+        loadDocuments().catch(err => {
+            console.error("⚠️  Error loading documents:", err.message);
+        });
+    } catch (error) {
+        isMongoConnected = false;
+        isConnecting = false;
+        connectionRetries++;
+        console.error("❌ MongoDB connection error:", error.message);
+        
+        if (connectionRetries < MAX_RETRIES) {
+            console.log(`🔄 Retrying connection (${connectionRetries}/${MAX_RETRIES})...`);
+            // Retry after 5 seconds
+            setTimeout(() => {
+                connectToMongoDB().catch(() => {});
+            }, 5000);
+        } else {
+            console.log("");
+            console.log("⚠️  IMPORTANT: Database connection failed after multiple attempts!");
+            console.log("   The server will start, but database operations will fail.");
+            console.log("");
+            console.log("🔧 Troubleshooting steps:");
+            console.log("   1. Check your MONGODB_URI in .env file");
+            console.log("   2. Whitelist your IP address in MongoDB Atlas:");
+            console.log("      - Go to: https://cloud.mongodb.com/");
+            console.log("      - Navigate to: Network Access → Add IP Address");
+            console.log("      - Add your current IP (or use 0.0.0.0/0 for all IPs - less secure)");
+            console.log("   3. Verify your username and password are correct");
+            console.log("   4. Check that the database name exists in your cluster");
+            console.log("");
+            console.log("   Connection string format:");
+            console.log("   mongodb+srv://username:password@cluster.mongodb.net/database");
+            console.log("");
+        }
+    }
+}
+
+// Initial connection attempt
+connectToMongoDB();
+
+// Connection event handlers
+mongoose.connection.on('error', (err) => {
+    isMongoConnected = false;
+    console.error("❌ MongoDB connection error:", err.message);
+    // Try to reconnect if not already connecting
+    if (!isConnecting && connectionRetries < MAX_RETRIES) {
+        setTimeout(() => {
+            connectToMongoDB().catch(() => {});
+        }, 5000);
+    }
 });
+
+mongoose.connection.on('disconnected', () => {
+    isMongoConnected = false;
+    console.warn("⚠️  MongoDB disconnected - attempting to reconnect...");
+    // Try to reconnect if not already connecting
+    if (!isConnecting && connectionRetries < MAX_RETRIES) {
+        setTimeout(() => {
+            connectToMongoDB().catch(() => {});
+        }, 5000);
+    }
+});
+
+mongoose.connection.on('reconnected', () => {
+    isMongoConnected = true;
+    connectionRetries = 0;
+    console.log("✅ MongoDB reconnected");
+});
+
+// Helper function to wait for MongoDB connection with retries
+async function waitForMongoConnection(maxWaitTime = 10000) {
+    // If already connected, return immediately
+    if (mongoose.connection.readyState === 1) {
+        return true;
+    }
+
+    // Try to connect if not already connecting
+    if (!isConnecting && mongoose.connection.readyState === 0) {
+        connectToMongoDB().catch(() => {});
+    }
+
+    // Wait for connection with timeout
+    const startTime = Date.now();
+    while (mongoose.connection.readyState !== 1 && (Date.now() - startTime) < maxWaitTime) {
+        await new Promise(resolve => setTimeout(resolve, 500)); // Check every 500ms
+    }
+
+    return mongoose.connection.readyState === 1;
+}
+
+// Helper function to check if MongoDB is connected (with automatic retry)
+async function ensureMongoConnection() {
+    const isReady = await waitForMongoConnection(5000); // Wait up to 5 seconds
+    if (!isReady) {
+        throw new Error("Database connection not established. Please wait a moment and try again.");
+    }
+    return true;
+}
 
 // Initialize Google Gemini AI
 // Load API key from .env file
@@ -99,6 +218,27 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(express.json());
+
+// Middleware to wait for MongoDB connection for database-dependent routes
+const waitForDB = async (req, res, next) => {
+    // Skip health check and root routes
+    if (req.path === '/api/health' || req.path === '/') {
+        return next();
+    }
+    
+    // For routes that need database, wait for connection
+    const isReady = await waitForMongoConnection(3000); // Wait up to 3 seconds
+    if (!isReady) {
+        return res.status(503).json({ 
+            error: "Database connection not ready. Please try again in a moment.",
+            retry: true
+        });
+    }
+    next();
+};
+
+// Apply middleware to all API routes except health check
+app.use('/api', waitForDB);
 
 const uploadsDir = path.join(__dirname, "uploads");
 const documentsDir = path.join(__dirname, "documents");
@@ -1429,7 +1569,6 @@ app.post("/api/ask", authenticateToken, async (req, res) => {
     console.log(`📚 Total documents available: ${documents.length}`);
     
     let answer = "";
-    let sources = [];
     
     const queryLower = query.toLowerCase().trim();
     const isMath = /^[\d\+\-\*\/\(\)\.\s]+$/.test(queryLower.replace(/\s/g, '')) || /(?:what is|calculate|compute|solve|evaluate)\s+[\d\+\-\*\/\(\)\.\s]+/i.test(queryLower);
@@ -1466,15 +1605,6 @@ app.post("/api/ask", authenticateToken, async (req, res) => {
                     })
                     .join('\n\n---\n\n');
                 
-                // Include sources
-                sources = relevantChunks.slice(0, 3).map((r) => ({
-                    id: r.docId,
-                    title: r.title,
-                    filename: r.filename,
-                    snippet: r.chunk.substring(0, 150) + '...',
-                    score: r.score,
-                }));
-                
                 console.log(`📄 Including ${relevantChunks.length} document chunk(s) as context`);
             }
         }
@@ -1507,7 +1637,6 @@ app.post("/api/ask", authenticateToken, async (req, res) => {
     
     res.json({
         answer,
-        sources,
     });
 });
 
@@ -1879,6 +2008,11 @@ ${context}
 **YOUR TASK:**
 Provide a comprehensive, flowing paragraph-style answer that thoroughly addresses the question. Write in natural, conversational paragraphs that connect ideas smoothly. Use the document information when relevant, and supplement with your general knowledge to provide a complete, well-rounded answer.
 
+**IMPORTANT:**
+- DO NOT include sources, citations, or references in your answer
+- DO NOT mention which documents you used
+- Just provide the answer directly without any source attribution
+
 **RESPONSE FORMAT:**
 - Write in flowing paragraphs (3-5 sentences per paragraph)
 - Connect ideas naturally with transitions
@@ -1886,6 +2020,7 @@ Provide a comprehensive, flowing paragraph-style answer that thoroughly addresse
 - Explain concepts thoroughly
 - Use natural, conversational language
 - Maximum 400 words
+- No sources or citations
 
 **EXAMPLE:**
 [Write a flowing paragraph that explains the topic comprehensively, connecting ideas smoothly and providing context...]
@@ -1903,12 +2038,18 @@ ${context}
 **YOUR TASK:**
 Provide a direct, straightforward answer to the question. Be concise and to the point. Use the document information when relevant, and supplement with your general knowledge if needed.
 
+**IMPORTANT:**
+- DO NOT include sources, citations, or references in your answer
+- DO NOT mention which documents you used
+- Just provide the answer directly without any source attribution
+
 **RESPONSE FORMAT:**
 - Give a direct answer (1-3 sentences)
 - Be specific and factual
 - No unnecessary elaboration
 - If listing items, use simple bullet points
 - Maximum 150 words
+- No sources or citations
 
 **EXAMPLE:**
 [Direct, concise answer to the question]
@@ -1946,6 +2087,10 @@ ${query}
 **YOUR TASK:**
 Provide a well-structured, easy-to-read answer that directly addresses the question. Use your general knowledge to provide helpful, accurate information.
 
+**IMPORTANT:**
+- DO NOT include sources, citations, or references in your answer
+- Just provide the answer directly without any source attribution
+
 **STRUCTURE YOUR RESPONSE:**
 
 1. **Direct Answer**: Start with a clear, direct answer (1-2 sentences)
@@ -1967,6 +2112,7 @@ Provide a well-structured, easy-to-read answer that directly addresses the quest
    - Be concise but comprehensive (under 300 words)
    - Use natural, conversational language
    - If you don't know, say so honestly
+   - No sources or citations
 
 **EXAMPLE FORMAT:**
 [Direct answer]
@@ -1987,12 +2133,17 @@ ${query}
 **YOUR TASK:**
 Provide a direct, straightforward answer to the question. Be concise and to the point.
 
+**IMPORTANT:**
+- DO NOT include sources, citations, or references in your answer
+- Just provide the answer directly without any source attribution
+
 **RESPONSE FORMAT:**
 - Give a direct answer (1-3 sentences)
 - Be specific and factual
 - No unnecessary elaboration
 - If listing items, use simple bullet points
 - Maximum 150 words
+- No sources or citations
 
 **EXAMPLE:**
 [Direct, concise answer to the question]
@@ -2533,12 +2684,37 @@ app.get("/api/health", (req, res) => {
     });
 });
 
-app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-    if (mongoose.connection.readyState === 1) {
-        console.log(`✅ MongoDB: Connected`);
-    } else {
-        console.log(`⚠️  MongoDB: Connecting...`);
+// Start server after MongoDB connection attempt (with timeout)
+const startServer = async () => {
+    // Wait up to 10 seconds for MongoDB connection, then start server anyway
+    const maxWaitTime = 10000; // 10 seconds
+    const startTime = Date.now();
+    
+    console.log("⏳ Waiting for MongoDB connection...");
+    while (mongoose.connection.readyState !== 1 && (Date.now() - startTime) < maxWaitTime) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Check every 1 second
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        if (elapsed % 2 === 0) {
+            process.stdout.write(".");
+        }
     }
+    console.log(""); // New line after dots
+    
+    app.listen(PORT, () => {
+        console.log(`🚀 Server running on http://localhost:${PORT}`);
+        console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
+        if (mongoose.connection.readyState === 1) {
+            console.log(`✅ MongoDB: Connected and ready`);
+        } else {
+            console.log(`⚠️  MongoDB: Connection failed or still connecting`);
+            console.log(`   The server is running, but API endpoints that require database access will fail.`);
+            console.log(`   Please check the error messages above and fix the MongoDB connection.`);
+        }
+    });
+};
+
+// Start the server
+startServer().catch(err => {
+    console.error("❌ Error starting server:", err);
+    process.exit(1);
 });
